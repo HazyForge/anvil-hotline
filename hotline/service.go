@@ -1,4 +1,4 @@
-// Package hotline is the transport-agnostic operator feedback library used by
+// Package hotline is the transport-agnostic agent feedback library used by
 // Anvil and Hazy Trade agents when they need a bounded human reply before
 // continuing. Discord is the first transport: post one question, poll for an
 // authorized reply, and return only the reply text.
@@ -13,7 +13,7 @@ import (
 
 var ErrUnsupportedTransport = errors.New("unsupported feedback transport")
 
-// Question is one operator escalation. Prompt is required; Context and RunName
+// Question is one human escalation. Prompt is required; Context and RunName
 // are optional message enrichment. AllowedUserIDs is the fail-closed allowlist
 // for Discord replies unless the transport explicitly allows any non-bot user.
 type Question struct {
@@ -26,7 +26,7 @@ type Question struct {
 	AcceptAnyAfter bool
 }
 
-// Response is the operator's accepted reply after transport filtering.
+// Response is the accepted human reply after transport filtering.
 type Response struct {
 	Text           string `json:"text"`
 	AuthorID       string `json:"authorId,omitempty"`
@@ -64,7 +64,7 @@ func (s Service) Ask(ctx context.Context, question Question) (Response, error) {
 // FormatQuestionMessage builds the Discord (or other chat) payload.
 func FormatQuestionMessage(question Question) string {
 	var builder strings.Builder
-	builder.WriteString("**Operator Hotline — agent needs a reply**\n\n")
+	builder.WriteString("**Anvil Hotline — agent needs a reply**\n\n")
 	if question.RunName != "" {
 		builder.WriteString("AgentRun: `")
 		builder.WriteString(question.RunName)
@@ -76,7 +76,7 @@ func FormatQuestionMessage(question Question) string {
 		builder.WriteString("\n\nContext:\n")
 		builder.WriteString(question.Context)
 	}
-	builder.WriteString("\n\nPlease reply directly to this message. The agent is waiting for an authorized operator reply.")
+	builder.WriteString("\n\nPlease reply directly to this message. The agent is waiting for an authorized reply.")
 	return limitRunes(builder.String(), 1900)
 }
 
@@ -88,7 +88,7 @@ func limitRunes(value string, limit int) string {
 	if len(runes) <= limit {
 		return value
 	}
-	suffix := "\n\n[truncated by operator-hotline; ask a narrower follow-up if needed]"
+	suffix := "\n\n[truncated by anvil-hotline; ask a narrower follow-up if needed]"
 	suffixRunes := []rune(suffix)
 	if len(suffixRunes) >= limit {
 		return string(runes[:limit])

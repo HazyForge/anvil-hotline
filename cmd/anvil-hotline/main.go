@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hazyforge/anvil-operator-hotline/hotline"
+	"github.com/hazyforge/anvil-hotline/hotline"
 )
 
 type stringList []string
@@ -32,7 +32,7 @@ func (s *stringList) Set(value string) error {
 
 func main() {
 	if err := run(os.Args[1:], os.Stdin, os.Stdout, os.Stderr); err != nil {
-		fmt.Fprintf(os.Stderr, "operator-hotline: %v\n", err)
+		fmt.Fprintf(os.Stderr, "anvil-hotline: %v\n", err)
 		os.Exit(1)
 	}
 }
@@ -41,7 +41,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) > 0 && args[0] == "ask" {
 		args = args[1:]
 	}
-	flags := flag.NewFlagSet("operator-hotline ask", flag.ContinueOnError)
+	flags := flag.NewFlagSet("anvil-hotline ask", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 
 	var allowedUserIDs stringList
@@ -50,12 +50,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	contextText := flags.String("context", "", "optional context text")
 	contextFile := flags.String("context-file", "", "file containing context text, or '-' for stdin")
 	runName := flags.String("run", envFirst("ANVIL_AGENT_RUN"), "AgentRun name for message context")
-	transport := flags.String("transport", envFirstDefault("discord", "ANVIL_AGENT_FEEDBACK_TRANSPORT", "ANVIL_SOCIAL_TRANSPORT", "OPERATOR_HOTLINE_TRANSPORT"), "feedback transport")
-	timeoutRaw := flags.String("timeout", envFirstDefault("30m", "ANVIL_AGENT_FEEDBACK_TIMEOUT", "OPERATOR_HOTLINE_TIMEOUT"), "maximum wait time; use 0 for no timeout")
-	pollRaw := flags.String("poll-interval", envFirstDefault("5s", "ANVIL_AGENT_FEEDBACK_POLL_INTERVAL", "OPERATOR_HOTLINE_POLL_INTERVAL"), "poll interval")
-	output := flags.String("output", envFirstDefault("text", "ANVIL_AGENT_FEEDBACK_OUTPUT", "OPERATOR_HOTLINE_OUTPUT"), "output format: text or json")
-	acceptAnyAfter := flags.Bool("accept-any-after", envBool("ANVIL_AGENT_FEEDBACK_ACCEPT_ANY_AFTER", envBool("OPERATOR_HOTLINE_ACCEPT_ANY_AFTER", false)), "accept first non-bot message after the question instead of requiring a direct reply")
-	allowAnyUser := flags.Bool("allow-any-user", envBool("ANVIL_AGENT_FEEDBACK_ALLOW_ANY_USER", envBool("OPERATOR_HOTLINE_ALLOW_ANY_USER", false)), "allow replies from any non-bot channel member; disabled by default")
+	transport := flags.String("transport", envFirstDefault("discord", "ANVIL_HOTLINE_TRANSPORT", "ANVIL_AGENT_FEEDBACK_TRANSPORT", "ANVIL_SOCIAL_TRANSPORT"), "feedback transport")
+	timeoutRaw := flags.String("timeout", envFirstDefault("30m", "ANVIL_HOTLINE_TIMEOUT", "ANVIL_AGENT_FEEDBACK_TIMEOUT"), "maximum wait time; use 0 for no timeout")
+	pollRaw := flags.String("poll-interval", envFirstDefault("5s", "ANVIL_HOTLINE_POLL_INTERVAL", "ANVIL_AGENT_FEEDBACK_POLL_INTERVAL"), "poll interval")
+	output := flags.String("output", envFirstDefault("text", "ANVIL_HOTLINE_OUTPUT", "ANVIL_AGENT_FEEDBACK_OUTPUT"), "output format: text or json")
+	acceptAnyAfter := flags.Bool("accept-any-after", envBoolFirst(false, "ANVIL_HOTLINE_ACCEPT_ANY_AFTER", "ANVIL_AGENT_FEEDBACK_ACCEPT_ANY_AFTER"), "accept first non-bot message after the question instead of requiring a direct reply")
+	allowAnyUser := flags.Bool("allow-any-user", envBoolFirst(false, "ANVIL_HOTLINE_ALLOW_ANY_USER", "ANVIL_AGENT_FEEDBACK_ALLOW_ANY_USER"), "allow replies from any non-bot channel member; disabled by default")
 	flags.Var(&allowedUserIDs, "allowed-user-id", "allowed Discord user id; may be repeated or comma-separated")
 	discordToken := flags.String("discord-token", "", "Discord bot token")
 	discordChannelID := flags.String("discord-channel-id", "", "Discord channel id")
@@ -67,7 +67,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
-	if envAllowed := envFirst("ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS", "ANVIL_DISCORD_ALLOWED_USER_IDS", "OPERATOR_HOTLINE_ALLOWED_USER_IDS"); envAllowed != "" {
+	if envAllowed := envFirst("ANVIL_HOTLINE_ALLOWED_USER_IDS", "ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS", "ANVIL_DISCORD_ALLOWED_USER_IDS"); envAllowed != "" {
 		_ = allowedUserIDs.Set(envAllowed)
 	}
 
@@ -88,9 +88,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return fmt.Errorf("parse poll interval: %w", err)
 	}
 
-	discordTokenValue := envDefaultIfEmpty(*discordToken, "ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN", "ANVIL_DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN", "OPERATOR_HOTLINE_DISCORD_BOT_TOKEN")
-	discordChannelIDValue := envDefaultIfEmpty(*discordChannelID, "ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID", "ANVIL_DISCORD_CHANNEL_ID", "DISCORD_CHANNEL_ID", "OPERATOR_HOTLINE_DISCORD_CHANNEL_ID")
-	discordAPIBaseURLValue := envDefaultIfEmpty(*discordAPIBaseURL, "ANVIL_AGENT_FEEDBACK_DISCORD_API_BASE_URL", "DISCORD_API_BASE_URL", "OPERATOR_HOTLINE_DISCORD_API_BASE_URL")
+	discordTokenValue := envDefaultIfEmpty(*discordToken, "ANVIL_HOTLINE_DISCORD_BOT_TOKEN", "ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN", "ANVIL_DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN")
+	discordChannelIDValue := envDefaultIfEmpty(*discordChannelID, "ANVIL_HOTLINE_DISCORD_CHANNEL_ID", "ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID", "ANVIL_DISCORD_CHANNEL_ID", "DISCORD_CHANNEL_ID")
+	discordAPIBaseURLValue := envDefaultIfEmpty(*discordAPIBaseURL, "ANVIL_HOTLINE_DISCORD_API_BASE_URL", "ANVIL_AGENT_FEEDBACK_DISCORD_API_BASE_URL", "DISCORD_API_BASE_URL")
 
 	adapter, err := buildTransport(*transport, discordTokenValue, discordChannelIDValue, discordAPIBaseURLValue, *acceptAnyAfter, *allowAnyUser)
 	if err != nil {
@@ -209,13 +209,14 @@ func envDefaultIfEmpty(value string, names ...string) string {
 	return envFirst(names...)
 }
 
-func envBool(name string, fallback bool) bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
-	default:
-		return fallback
+func envBoolFirst(fallback bool, names ...string) bool {
+	for _, name := range names {
+		switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
+		case "1", "true", "yes", "on":
+			return true
+		case "0", "false", "no", "off":
+			return false
+		}
 	}
+	return fallback
 }

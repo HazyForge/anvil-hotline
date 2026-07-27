@@ -1,7 +1,7 @@
-# anvil-operator-hotline
+# anvil-hotline
 
-Standalone Go library and CLI for **operator hotline** calls from Anvil /
-Hazy Trade agents.
+Standalone Go library and CLI for **Anvil Hotline** calls from Anvil and Hazy
+Trade agents.
 
 When an agent has gathered evidence and still cannot choose a safe next action,
 it posts one narrow question to Discord, waits for an authorized human reply,
@@ -12,21 +12,21 @@ first implementation.
 
 | Surface | Name |
 | --- | --- |
-| Preferred CLI | `operator-hotline` |
-| Compatibility alias | `anvil-agent-feedback` (still installed in runner images) |
-| Go module | `github.com/hazyforge/anvil-operator-hotline` |
+| Preferred CLI | `anvil-hotline` |
+| Compatibility alias | `anvil-agent-feedback` (optional symlink in runner images) |
+| Go module | `github.com/hazyforge/anvil-hotline` |
 | Library package | `hotline` |
 
 ## Install
 
 ```bash
-go install github.com/hazyforge/anvil-operator-hotline/cmd/operator-hotline@latest
+go install github.com/hazyforge/anvil-hotline/cmd/anvil-hotline@latest
 ```
 
 Or build from a checkout:
 
 ```bash
-go build -o operator-hotline ./cmd/operator-hotline
+go build -o anvil-hotline ./cmd/anvil-hotline
 ```
 
 ## Ask and wait
@@ -36,41 +36,42 @@ export ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN=...
 export ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID=...
 export ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS=357735082519429122
 
-reply="$(operator-hotline ask \
+reply="$(anvil-hotline ask \
   --question "May I proceed with the proposed default? Reply yes or no." \
   --context "AgentRun=${ANVIL_AGENT_RUN:-local-test}" \
   --timeout 30m)"
 printf '%s\n' "$reply"
 ```
 
-Stdout is only the operator reply text (or JSON with `--output json`). Errors
-go to stderr. Secrets must never be printed.
+Stdout is only the human reply text (or JSON with `--output json`). Errors go
+to stderr. Secrets must never be printed.
 
 ## Environment
 
 | Variable | Purpose |
 | --- | --- |
-| `ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN` / `DISCORD_BOT_TOKEN` | Bot token |
-| `ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID` / `DISCORD_CHANNEL_ID` | Channel to post into |
-| `ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS` | Comma-separated Discord user IDs allowed to answer |
-| `ANVIL_AGENT_FEEDBACK_ALLOW_ANY_USER` | If `true`, any non-bot member may answer (private channels only) |
-| `ANVIL_AGENT_FEEDBACK_TIMEOUT` | Default wait (e.g. `30m`, `1h`) |
-| `ANVIL_AGENT_FEEDBACK_POLL_INTERVAL` | Poll cadence (default `5s`) |
-| `ANVIL_AGENT_FEEDBACK_ACCEPT_ANY_AFTER` | Accept first non-bot message after the question without requiring a Discord reply reference |
+| `ANVIL_HOTLINE_DISCORD_BOT_TOKEN` / `ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN` / `DISCORD_BOT_TOKEN` | Bot token |
+| `ANVIL_HOTLINE_DISCORD_CHANNEL_ID` / `ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID` / `DISCORD_CHANNEL_ID` | Channel to post into |
+| `ANVIL_HOTLINE_ALLOWED_USER_IDS` / `ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS` | Comma-separated Discord user IDs allowed to answer |
+| `ANVIL_HOTLINE_ALLOW_ANY_USER` / `ANVIL_AGENT_FEEDBACK_ALLOW_ANY_USER` | If `true`, any non-bot member may answer (private channels only) |
+| `ANVIL_HOTLINE_TIMEOUT` / `ANVIL_AGENT_FEEDBACK_TIMEOUT` | Default wait (e.g. `30m`, `1h`) |
+| `ANVIL_HOTLINE_POLL_INTERVAL` / `ANVIL_AGENT_FEEDBACK_POLL_INTERVAL` | Poll cadence (default `5s`) |
+| `ANVIL_HOTLINE_ACCEPT_ANY_AFTER` / `ANVIL_AGENT_FEEDBACK_ACCEPT_ANY_AFTER` | Accept first non-bot message after the question without requiring a Discord reply reference |
 | `ANVIL_AGENT_RUN` | Optional AgentRun name shown in the Discord message |
 
-`OPERATOR_HOTLINE_*` aliases are also accepted for the same settings.
+Legacy `ANVIL_AGENT_FEEDBACK_*` names remain supported so existing Kubernetes
+Secrets keep working.
 
 ## Fail-closed allowlist
 
 By default the tool refuses to wait unless at least one allowed Discord user
-ID is configured. Enable `ANVIL_AGENT_FEEDBACK_ALLOW_ANY_USER=true` only when
-channel membership itself is the authorization boundary.
+ID is configured. Enable `ANVIL_HOTLINE_ALLOW_ANY_USER=true` only when channel
+membership itself is the authorization boundary.
 
 ## Library use
 
 ```go
-import "github.com/hazyforge/anvil-operator-hotline/hotline"
+import "github.com/hazyforge/anvil-hotline/hotline"
 
 adapter, err := hotline.NewDiscordAdapter(hotline.DiscordConfig{
     BotToken:  token,
@@ -93,6 +94,7 @@ does not expand Kubernetes, GitHub, or trading authority.
 
 ## Origin
 
-Extracted from the Discord ask-and-wait path that lived in
-`anvil-agents` (`lib/agentfeedback` / `cmd/anvil-agent-feedback`), itself the
-runtime home for the former Anvil Primaris AgentRun feedback helper.
+Extracted from the Discord ask-and-wait path that lived in `anvil-agents`
+(`lib/agentfeedback` / `cmd/anvil-agent-feedback`), itself the runtime home for
+the former Anvil Primaris AgentRun feedback helper. This repository is the
+source of truth for the binary and library.

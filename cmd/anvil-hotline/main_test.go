@@ -14,7 +14,7 @@ func TestRunHelpReturnsSuccess(t *testing.T) {
 	if err := run([]string{"ask", "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("run help returned error: %v", err)
 	}
-	if !strings.Contains(stderr.String(), "Usage of operator-hotline ask:") {
+	if !strings.Contains(stderr.String(), "Usage of anvil-hotline ask:") {
 		t.Fatalf("help output = %q, want usage", stderr.String())
 	}
 }
