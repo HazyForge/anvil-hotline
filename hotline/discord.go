@@ -47,7 +47,7 @@ func NewDiscordAdapter(config DiscordConfig) (*DiscordAdapter, error) {
 		config.APIBaseURL = defaultDiscordAPIBaseURL
 	}
 	if config.UserAgent == "" {
-		config.UserAgent = "operator-hotline/0"
+		config.UserAgent = "anvil-hotline/0"
 	}
 	client := config.HTTPClient
 	if client == nil {

@@ -28,8 +28,8 @@ func TestDiscordAdapterWaitsForReplyToQuestion(t *testing.T) {
 			if !strings.Contains(payload.Content, "Should I restart the controller?") {
 				t.Fatalf("posted content = %q, want question", payload.Content)
 			}
-			if !strings.Contains(payload.Content, "Operator Hotline") {
-				t.Fatalf("posted content = %q, want Operator Hotline branding", payload.Content)
+			if !strings.Contains(payload.Content, "Anvil Hotline") {
+				t.Fatalf("posted content = %q, want Anvil Hotline branding", payload.Content)
 			}
 			if len(payload.AllowedMentions.Parse) != 0 {
 				t.Fatalf("allowed mentions parse = %#v, want empty", payload.AllowedMentions.Parse)

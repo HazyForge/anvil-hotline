@@ -16,4 +16,4 @@ jobs:
       - name: Test
         run: go test ./...
       - name: Build
-        run: go build -trimpath -o /tmp/operator-hotline ./cmd/operator-hotline
+        run: go build -trimpath -o /tmp/anvil-hotline ./cmd/anvil-hotline
