@@ -1,0 +1,11 @@
+/bin/
+/dist/
+*.exe
+*.test
+*.out
+.idea/
+.vscode/
+*.swp
+.env
+.env.*
+!.env.example
