@@ -92,6 +92,20 @@ Use the hotline only after evidence gathering, with one narrow question, a
 proposed default, and a clear expected answer form. A reply is information; it
 does not expand Kubernetes, GitHub, or trading authority.
 
+## Security and release
+
+```bash
+make verify
+make security   # govulncheck + gosec (also Primaris release gate)
+```
+
+- **GitHub Actions:** `security.yml` on PR/push/schedule; `release.yml` on `v*`
+  tags requires security before publishing binaries.
+- **Anvil Primaris:** `.hazyforge/tests.yaml` release gate suites
+  `unit` + `security`. Drive with `anvilctl test run` / ApplicationRelease.
+
+Details: [docs/security-and-release.md](docs/security-and-release.md).
+
 ## Origin
 
 Extracted from the Discord ask-and-wait path that lived in `anvil-agents`

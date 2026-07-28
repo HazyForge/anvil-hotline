@@ -174,7 +174,9 @@ func readInputPath(path string, stdin io.Reader) (string, error) {
 		body, err := io.ReadAll(stdin)
 		return string(body), err
 	}
-	body, err := os.ReadFile(path)
+	// Path is an explicit CLI/operator input (--context-file / path arg), not
+	// untrusted path concatenation. Callers choose the file deliberately.
+	body, err := os.ReadFile(path) // #nosec G304 -- intentional operator-supplied path
 	return string(body), err
 }
 

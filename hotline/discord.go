@@ -203,7 +203,7 @@ func (a *DiscordAdapter) doJSON(ctx context.Context, method, path string, query 
 		}
 		if response.StatusCode == http.StatusTooManyRequests && attempt < 5 {
 			delay := discordRetryDelay(response.Body, response.Header.Get("Retry-After"))
-			response.Body.Close()
+			_ = response.Body.Close()
 			timer := time.NewTimer(delay)
 			select {
 			case <-ctx.Done():

@@ -1,0 +1,102 @@
+name: release
+
+# Tag releases require a green security gate before publishing GitHub Release assets.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release (e.g. v0.1.1)
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  security-events: write
+  actions: read
+
+concurrency:
+  group: release-${{ github.ref }}-${{ inputs.tag || github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      - run: |
+          go build -trimpath -o /tmp/anvil-hotline ./cmd/anvil-hotline
+          govulncheck ./...
+          govulncheck -mode=binary /tmp/anvil-hotline
+
+  gosec:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - uses: securego/gosec@master
+        with:
+          args: -no-fail=false -exclude=G104 ./...
+
+  codeql:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - uses: github/codeql-action/init@v3
+        with:
+          languages: go
+          queries: security-and-quality
+      - uses: github/codeql-action/autobuild@v3
+      - uses: github/codeql-action/analyze@v3
+
+  publish:
+    needs: [govulncheck, gosec, codeql]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+          cache: true
+      - name: Build release binaries
+        run: |
+          set -euo pipefail
+          version="${{ inputs.tag || github.ref_name }}"
+          mkdir -p dist
+          for goos in linux darwin; do
+            for goarch in amd64 arm64; do
+              out="dist/anvil-hotline_${version}_${goos}_${goarch}"
+              CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
+                go build -trimpath -ldflags="-s -w" \
+                -o "$out" ./cmd/anvil-hotline
+              (cd dist && sha256sum "$(basename "$out")" > "$(basename "$out").sha256")
+            done
+          done
+          ls -la dist
+      - name: Create or update GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          generate_release_notes: true
+          files: dist/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
