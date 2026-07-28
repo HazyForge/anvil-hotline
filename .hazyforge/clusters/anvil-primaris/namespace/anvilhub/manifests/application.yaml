@@ -1,0 +1,55 @@
+# Primaris Application + Repository for public module anvil-hotline.
+# Enables anvilctl test run / ApplicationRelease against TestContract gates
+# (unit + security) declared in .hazyforge/tests.yaml.
+apiVersion: infrastructure.anvil.hazyforge.io/v1alpha1
+kind: Repository
+metadata:
+  name: hazyforge-anvil-hotline
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+spec:
+  provider: github
+  cloneURL: https://github.com/HazyForge/anvil-hotline.git
+  defaultBranch: master
+  defaultCheckoutPath: /workspace/anvil-hotline
+  sourceCredentialRef:
+    name: anvil-primaris-source-read
+  github:
+    owner: HazyForge
+    name: anvil-hotline
+---
+apiVersion: control.anvil.hazyforge.io/v1alpha1
+kind: Application
+metadata:
+  name: anvil-hotline
+  labels:
+    app.kubernetes.io/name: anvil-hotline
+    app.kubernetes.io/part-of: anvilhub
+spec:
+  displayName: Anvil Hotline
+  description: >-
+    Public Go CLI/library for Discord ask-and-wait operator feedback.
+    Release promotion requires unit + security TestContract suites.
+  repositoryRef:
+    name: hazyforge-anvil-hotline
+  repositories:
+    - name: primary
+      role: primary
+      repositoryRef:
+        name: hazyforge-anvil-hotline
+  components:
+    - name: cli
+      type: File
+      source:
+        repository: primary
+        path: .
+      artifactNamespace: github.com/hazyforge/anvil-hotline
+  testContract:
+    repository: primary
+    path: .hazyforge/tests.yaml
+  versionSeries:
+    - name: cli
+      scheme: SemVer
+  runtime:
+    namespaces:
+      - anvilhub

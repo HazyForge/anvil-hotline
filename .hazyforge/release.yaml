@@ -1,0 +1,27 @@
+# Anvil Primaris release contract for public module anvil-hotline.
+# Drive with anvilctl against Application `anvil-hotline` so security suites
+# in tests.yaml are required for ApplicationRelease.
+apiVersion: anvil.hazyforge.io/release/v1alpha1
+kind: ReleaseContract
+metadata:
+  name: anvil-hotline
+  application: anvil-hotline
+spec:
+  description: >-
+    Public Go CLI/library for Discord ask-and-wait operator feedback.
+    Releases require unit + security TestContract suites (govulncheck, gosec).
+  testGateSuites:
+    - unit
+    - security
+  # Prefer GitHub Actions tag workflow for binary assets; Primaris owns
+  # verification evidence (TestRun / VerificationRecord) before promotion.
+  notes: |
+    Local/public CI:
+      make verify
+      make security
+    GitHub:
+      - security.yml on PR/push/schedule/release
+      - release.yml on v* tags (security required before assets)
+    Primaris:
+      anvilctl test run --application anvil-hotline --suite security
+      anvilctl release ...  # must pass gates.release suites
