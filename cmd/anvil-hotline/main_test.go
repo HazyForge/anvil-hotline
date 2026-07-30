@@ -20,9 +20,9 @@ func TestRunHelpReturnsSuccess(t *testing.T) {
 }
 
 func TestRunHelpDoesNotPrintEnvBackedDiscordCredentials(t *testing.T) {
-	t.Setenv("ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN", "secret-bot-token")
-	t.Setenv("ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID", "secret-channel-id")
-	t.Setenv("ANVIL_AGENT_FEEDBACK_DISCORD_API_BASE_URL", "https://discord.example.invalid/api")
+	t.Setenv("ANVIL_HOTLINE_DISCORD_BOT_TOKEN", "secret-bot-token")
+	t.Setenv("ANVIL_HOTLINE_DISCORD_CHANNEL_ID", "secret-channel-id")
+	t.Setenv("ANVIL_HOTLINE_DISCORD_API_BASE_URL", "https://discord.example.invalid/api")
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

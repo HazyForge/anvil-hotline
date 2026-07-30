@@ -12,8 +12,7 @@ first implementation.
 
 | Surface | Name |
 | --- | --- |
-| Preferred CLI | `anvil-hotline` |
-| Compatibility alias | `anvil-agent-feedback` (optional symlink in runner images) |
+| CLI | `anvil-hotline` |
 | Go module | `github.com/hazyforge/anvil-hotline` |
 | Library package | `hotline` |
 
@@ -32,13 +31,13 @@ go build -o anvil-hotline ./cmd/anvil-hotline
 ## Ask and wait
 
 ```bash
-export ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN=...
-export ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID=...
-export ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS=357735082519429122
+export ANVIL_HOTLINE_DISCORD_BOT_TOKEN=...
+export ANVIL_HOTLINE_DISCORD_CHANNEL_ID=...
+export ANVIL_HOTLINE_ALLOWED_USER_IDS=357735082519429122
 
 reply="$(anvil-hotline ask \
   --question "May I proceed with the proposed default? Reply yes or no." \
-  --context "AgentRun=${ANVIL_AGENT_RUN:-local-test}" \
+  --context "run=${ANVIL_HOTLINE_RUN:-local-test}" \
   --timeout 30m)"
 printf '%s\n' "$reply"
 ```
@@ -50,17 +49,17 @@ to stderr. Secrets must never be printed.
 
 | Variable | Purpose |
 | --- | --- |
-| `ANVIL_HOTLINE_DISCORD_BOT_TOKEN` / `ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN` / `DISCORD_BOT_TOKEN` | Bot token |
-| `ANVIL_HOTLINE_DISCORD_CHANNEL_ID` / `ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID` / `DISCORD_CHANNEL_ID` | Channel to post into |
-| `ANVIL_HOTLINE_ALLOWED_USER_IDS` / `ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS` | Comma-separated Discord user IDs allowed to answer |
-| `ANVIL_HOTLINE_ALLOW_ANY_USER` / `ANVIL_AGENT_FEEDBACK_ALLOW_ANY_USER` | If `true`, any non-bot member may answer (private channels only) |
-| `ANVIL_HOTLINE_TIMEOUT` / `ANVIL_AGENT_FEEDBACK_TIMEOUT` | Default wait (e.g. `30m`, `1h`) |
-| `ANVIL_HOTLINE_POLL_INTERVAL` / `ANVIL_AGENT_FEEDBACK_POLL_INTERVAL` | Poll cadence (default `5s`) |
-| `ANVIL_HOTLINE_ACCEPT_ANY_AFTER` / `ANVIL_AGENT_FEEDBACK_ACCEPT_ANY_AFTER` | Accept first non-bot message after the question without requiring a Discord reply reference |
-| `ANVIL_AGENT_RUN` | Optional AgentRun name shown in the Discord message |
-
-Legacy `ANVIL_AGENT_FEEDBACK_*` names remain supported so existing Kubernetes
-Secrets keep working.
+| `ANVIL_HOTLINE_DISCORD_BOT_TOKEN` | Bot token |
+| `ANVIL_HOTLINE_DISCORD_CHANNEL_ID` | Channel to post into |
+| `ANVIL_HOTLINE_ALLOWED_USER_IDS` | Comma-separated Discord user IDs allowed to answer |
+| `ANVIL_HOTLINE_ALLOW_ANY_USER` | If `true`, any non-bot member may answer (private channels only) |
+| `ANVIL_HOTLINE_TIMEOUT` | Default wait (e.g. `30m`, `1h`) |
+| `ANVIL_HOTLINE_POLL_INTERVAL` | Poll cadence (default `5s`) |
+| `ANVIL_HOTLINE_ACCEPT_ANY_AFTER` | Accept first non-bot message after the question without requiring a Discord reply reference |
+| `ANVIL_HOTLINE_TRANSPORT` | Transport name (default `discord`) |
+| `ANVIL_HOTLINE_OUTPUT` | Output format: `text` or `json` |
+| `ANVIL_HOTLINE_RUN` | Optional run name shown in the Discord message |
+| `ANVIL_HOTLINE_DISCORD_API_BASE_URL` | Optional Discord API base URL override |
 
 ## Fail-closed allowlist
 
@@ -105,10 +104,3 @@ make security   # govulncheck + gosec (also Primaris release gate)
   `unit` + `security`. Drive with `anvilctl test run` / ApplicationRelease.
 
 Details: [docs/security-and-release.md](docs/security-and-release.md).
-
-## Origin
-
-Extracted from the Discord ask-and-wait path that lived in `anvil-agents`
-(`lib/agentfeedback` / `cmd/anvil-agent-feedback`), itself the runtime home for
-the former Anvil Primaris AgentRun feedback helper. This repository is the
-source of truth for the binary and library.

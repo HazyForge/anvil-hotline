@@ -24,5 +24,3 @@ security: security-govulncheck security-gosec
 
 install: build
 	install -m 0755 bin/anvil-hotline "$(HOME)/.local/bin/anvil-hotline"
-	# Compatibility alias for runner images and older AgentRun profiles.
-	ln -sfn "$(HOME)/.local/bin/anvil-hotline" "$(HOME)/.local/bin/anvil-agent-feedback"
