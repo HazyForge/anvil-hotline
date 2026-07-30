@@ -49,13 +49,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	questionFile := flags.String("question-file", "", "file containing question text, or '-' for stdin")
 	contextText := flags.String("context", "", "optional context text")
 	contextFile := flags.String("context-file", "", "file containing context text, or '-' for stdin")
-	runName := flags.String("run", envFirst("ANVIL_AGENT_RUN"), "AgentRun name for message context")
-	transport := flags.String("transport", envFirstDefault("discord", "ANVIL_HOTLINE_TRANSPORT", "ANVIL_AGENT_FEEDBACK_TRANSPORT", "ANVIL_SOCIAL_TRANSPORT"), "feedback transport")
-	timeoutRaw := flags.String("timeout", envFirstDefault("30m", "ANVIL_HOTLINE_TIMEOUT", "ANVIL_AGENT_FEEDBACK_TIMEOUT"), "maximum wait time; use 0 for no timeout")
-	pollRaw := flags.String("poll-interval", envFirstDefault("5s", "ANVIL_HOTLINE_POLL_INTERVAL", "ANVIL_AGENT_FEEDBACK_POLL_INTERVAL"), "poll interval")
-	output := flags.String("output", envFirstDefault("text", "ANVIL_HOTLINE_OUTPUT", "ANVIL_AGENT_FEEDBACK_OUTPUT"), "output format: text or json")
-	acceptAnyAfter := flags.Bool("accept-any-after", envBoolFirst(false, "ANVIL_HOTLINE_ACCEPT_ANY_AFTER", "ANVIL_AGENT_FEEDBACK_ACCEPT_ANY_AFTER"), "accept first non-bot message after the question instead of requiring a direct reply")
-	allowAnyUser := flags.Bool("allow-any-user", envBoolFirst(false, "ANVIL_HOTLINE_ALLOW_ANY_USER", "ANVIL_AGENT_FEEDBACK_ALLOW_ANY_USER"), "allow replies from any non-bot channel member; disabled by default")
+	runName := flags.String("run", envFirst("ANVIL_HOTLINE_RUN"), "optional run name for message context")
+	transport := flags.String("transport", envFirstDefault("discord", "ANVIL_HOTLINE_TRANSPORT"), "hotline transport")
+	timeoutRaw := flags.String("timeout", envFirstDefault("30m", "ANVIL_HOTLINE_TIMEOUT"), "maximum wait time; use 0 for no timeout")
+	pollRaw := flags.String("poll-interval", envFirstDefault("5s", "ANVIL_HOTLINE_POLL_INTERVAL"), "poll interval")
+	output := flags.String("output", envFirstDefault("text", "ANVIL_HOTLINE_OUTPUT"), "output format: text or json")
+	acceptAnyAfter := flags.Bool("accept-any-after", envBoolFirst(false, "ANVIL_HOTLINE_ACCEPT_ANY_AFTER"), "accept first non-bot message after the question instead of requiring a direct reply")
+	allowAnyUser := flags.Bool("allow-any-user", envBoolFirst(false, "ANVIL_HOTLINE_ALLOW_ANY_USER"), "allow replies from any non-bot channel member; disabled by default")
 	flags.Var(&allowedUserIDs, "allowed-user-id", "allowed Discord user id; may be repeated or comma-separated")
 	discordToken := flags.String("discord-token", "", "Discord bot token")
 	discordChannelID := flags.String("discord-channel-id", "", "Discord channel id")
@@ -67,7 +67,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
-	if envAllowed := envFirst("ANVIL_HOTLINE_ALLOWED_USER_IDS", "ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS", "ANVIL_DISCORD_ALLOWED_USER_IDS"); envAllowed != "" {
+	if envAllowed := envFirst("ANVIL_HOTLINE_ALLOWED_USER_IDS"); envAllowed != "" {
 		_ = allowedUserIDs.Set(envAllowed)
 	}
 
@@ -88,9 +88,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return fmt.Errorf("parse poll interval: %w", err)
 	}
 
-	discordTokenValue := envDefaultIfEmpty(*discordToken, "ANVIL_HOTLINE_DISCORD_BOT_TOKEN", "ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN", "ANVIL_DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN")
-	discordChannelIDValue := envDefaultIfEmpty(*discordChannelID, "ANVIL_HOTLINE_DISCORD_CHANNEL_ID", "ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID", "ANVIL_DISCORD_CHANNEL_ID", "DISCORD_CHANNEL_ID")
-	discordAPIBaseURLValue := envDefaultIfEmpty(*discordAPIBaseURL, "ANVIL_HOTLINE_DISCORD_API_BASE_URL", "ANVIL_AGENT_FEEDBACK_DISCORD_API_BASE_URL", "DISCORD_API_BASE_URL")
+	discordTokenValue := envDefaultIfEmpty(*discordToken, "ANVIL_HOTLINE_DISCORD_BOT_TOKEN")
+	discordChannelIDValue := envDefaultIfEmpty(*discordChannelID, "ANVIL_HOTLINE_DISCORD_CHANNEL_ID")
+	discordAPIBaseURLValue := envDefaultIfEmpty(*discordAPIBaseURL, "ANVIL_HOTLINE_DISCORD_API_BASE_URL")
 
 	adapter, err := buildTransport(*transport, discordTokenValue, discordChannelIDValue, discordAPIBaseURLValue, *acceptAnyAfter, *allowAnyUser)
 	if err != nil {
@@ -174,7 +174,9 @@ func readInputPath(path string, stdin io.Reader) (string, error) {
 		body, err := io.ReadAll(stdin)
 		return string(body), err
 	}
-	body, err := os.ReadFile(path)
+	// Path is an explicit CLI/operator input (--context-file / path arg), not
+	// untrusted path concatenation. Callers choose the file deliberately.
+	body, err := os.ReadFile(path) // #nosec G304 -- intentional operator-supplied path
 	return string(body), err
 }
 
