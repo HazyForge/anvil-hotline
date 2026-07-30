@@ -1,7 +1,7 @@
 // Package hotline is the transport-agnostic agent feedback library used by
-// Anvil and Hazy Trade agents when they need a bounded human reply before
-// continuing. Discord is the first transport: post one question, poll for an
-// authorized reply, and return only the reply text.
+// Anvil agents when they need a bounded human reply before continuing.
+// Discord is the first transport: post one question, poll for an authorized
+// reply, and return only the reply text.
 package hotline
 
 import (
