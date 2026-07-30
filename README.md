@@ -1,7 +1,6 @@
 # anvil-hotline
 
-Standalone Go library and CLI for **Anvil Hotline** calls from Anvil and Hazy
-Trade agents.
+Standalone Go library and CLI for **Anvil Hotline** calls from Anvil agents.
 
 When an agent has gathered evidence and still cannot choose a safe next action,
 it posts one narrow question to Discord, waits for an authorized human reply,
