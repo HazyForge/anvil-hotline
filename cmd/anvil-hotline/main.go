@@ -45,6 +45,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	flags.SetOutput(stderr)
 
 	var allowedUserIDs stringList
+	var reactionFlags stringList
 	question := flags.String("question", "", "question text to post")
 	questionFile := flags.String("question-file", "", "file containing question text, or '-' for stdin")
 	contextText := flags.String("context", "", "optional context text")
@@ -56,7 +57,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	output := flags.String("output", envFirstDefault("text", "ANVIL_HOTLINE_OUTPUT"), "output format: text or json")
 	acceptAnyAfter := flags.Bool("accept-any-after", envBoolFirst(false, "ANVIL_HOTLINE_ACCEPT_ANY_AFTER"), "accept first non-bot message after the question instead of requiring a direct reply")
 	allowAnyUser := flags.Bool("allow-any-user", envBoolFirst(false, "ANVIL_HOTLINE_ALLOW_ANY_USER"), "allow replies from any non-bot channel member; disabled by default")
+	yesNoReactions := flags.Bool("yes-no-reactions", envBoolFirst(false, "ANVIL_HOTLINE_YES_NO_REACTIONS"), "pre-apply ✅=yes and ❌=no reaction choices")
 	flags.Var(&allowedUserIDs, "allowed-user-id", "allowed Discord user id; may be repeated or comma-separated")
+	flags.Var(&reactionFlags, "reaction", "pre-applied emoji choice as emoji=value (e.g. ✅=yes); may be repeated or comma-separated")
 	discordToken := flags.String("discord-token", "", "Discord bot token")
 	discordChannelID := flags.String("discord-channel-id", "", "Discord channel id")
 	discordAPIBaseURL := flags.String("discord-api-base-url", "", "Discord API base URL")
@@ -69,6 +72,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if envAllowed := envFirst("ANVIL_HOTLINE_ALLOWED_USER_IDS"); envAllowed != "" {
 		_ = allowedUserIDs.Set(envAllowed)
+	}
+	if envReactions := envFirst("ANVIL_HOTLINE_REACTIONS"); envReactions != "" {
+		_ = reactionFlags.Set(envReactions)
 	}
 
 	prompt, err := readTextInput(*question, *questionFile, stdin)
@@ -92,6 +98,11 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	discordChannelIDValue := envDefaultIfEmpty(*discordChannelID, "ANVIL_HOTLINE_DISCORD_CHANNEL_ID")
 	discordAPIBaseURLValue := envDefaultIfEmpty(*discordAPIBaseURL, "ANVIL_HOTLINE_DISCORD_API_BASE_URL")
 
+	reactions, err := buildReactionOptions(reactionFlags, *yesNoReactions)
+	if err != nil {
+		return err
+	}
+
 	adapter, err := buildTransport(*transport, discordTokenValue, discordChannelIDValue, discordAPIBaseURLValue, *acceptAnyAfter, *allowAnyUser)
 	if err != nil {
 		return err
@@ -105,6 +116,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		PollInterval:   pollInterval,
 		AllowedUserIDs: allowedUserIDs,
 		AcceptAnyAfter: *acceptAnyAfter,
+		Reactions:      reactions,
 	})
 	if err != nil {
 		return err
@@ -135,6 +147,35 @@ func buildTransport(transport, discordToken, discordChannelID, discordAPIBaseURL
 	default:
 		return nil, fmt.Errorf("%w: %s", hotline.ErrUnsupportedTransport, transport)
 	}
+}
+
+func buildReactionOptions(flags stringList, yesNo bool) ([]hotline.ReactionOption, error) {
+	var reactions []hotline.ReactionOption
+	if yesNo {
+		reactions = append(reactions,
+			hotline.ReactionOption{Emoji: "✅", Value: "yes"},
+			hotline.ReactionOption{Emoji: "❌", Value: "no"},
+		)
+	}
+	for _, raw := range flags {
+		option, err := hotline.ParseReactionOption(raw)
+		if err != nil {
+			return nil, fmt.Errorf("parse reaction %q: %w", raw, err)
+		}
+		// Explicit --reaction / env entries override the yes/no preset for the same emoji.
+		replaced := false
+		for i, existing := range reactions {
+			if existing.Emoji == option.Emoji {
+				reactions[i] = option
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			reactions = append(reactions, option)
+		}
+	}
+	return reactions, nil
 }
 
 func readTextInput(value, path string, stdin io.Reader) (string, error) {

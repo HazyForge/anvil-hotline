@@ -60,6 +60,11 @@ func (a *DiscordAdapter) Ask(ctx context.Context, question Question) (Response, 
 	if len(normalizedDiscordUserIDs(question.AllowedUserIDs)) == 0 && !a.config.AllowAnyUser {
 		return Response{}, errors.New("at least one allowed Discord user id is required unless allow-any-user is explicitly enabled")
 	}
+	reactions, err := normalizeReactionOptions(question.Reactions)
+	if err != nil {
+		return Response{}, err
+	}
+	question.Reactions = reactions
 	if question.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, question.Timeout)
@@ -67,6 +72,9 @@ func (a *DiscordAdapter) Ask(ctx context.Context, question Question) (Response, 
 	}
 	prompt, err := a.createMessage(ctx, FormatQuestionMessage(question))
 	if err != nil {
+		return Response{}, err
+	}
+	if err := a.applyReactions(ctx, prompt.ID, question.Reactions); err != nil {
 		return Response{}, err
 	}
 	return a.waitForReply(ctx, prompt.ID, question)
@@ -89,6 +97,25 @@ func (a *DiscordAdapter) createMessage(ctx context.Context, content string) (dis
 	return message, nil
 }
 
+func (a *DiscordAdapter) applyReactions(ctx context.Context, messageID string, reactions []ReactionOption) error {
+	for _, reaction := range reactions {
+		if err := a.createReaction(ctx, messageID, reaction.Emoji); err != nil {
+			return fmt.Errorf("apply reaction %q: %w", reaction.Emoji, err)
+		}
+	}
+	return nil
+}
+
+func (a *DiscordAdapter) createReaction(ctx context.Context, messageID, emoji string) error {
+	path := "/channels/" + url.PathEscape(a.config.ChannelID) +
+		"/messages/" + url.PathEscape(messageID) +
+		"/reactions/" + discordReactionPathEmoji(emoji) + "/@me"
+	if err := a.doJSON(ctx, http.MethodPut, path, nil, nil, nil); err != nil {
+		return fmt.Errorf("create discord reaction: %w", err)
+	}
+	return nil
+}
+
 func (a *DiscordAdapter) waitForReply(ctx context.Context, questionMessageID string, question Question) (Response, error) {
 	pollInterval := question.PollInterval
 	if pollInterval <= 0 {
@@ -103,11 +130,17 @@ func (a *DiscordAdapter) waitForReply(ctx context.Context, questionMessageID str
 		if message, ok := selectDiscordReply(messages, questionMessageID, a.config.ChannelID, question.AllowedUserIDs, a.config.AllowAnyUser, acceptAnyAfter); ok {
 			return Response{
 				Text:           strings.TrimSpace(message.Content),
+				Source:         "reply",
 				AuthorID:       message.Author.ID,
 				AuthorUsername: message.Author.Username,
 				MessageID:      message.ID,
 				ChannelID:      message.ChannelID,
 			}, nil
+		}
+		if response, ok, err := a.selectDiscordReaction(ctx, questionMessageID, question); err != nil {
+			return Response{}, err
+		} else if ok {
+			return response, nil
 		}
 		timer := time.NewTimer(pollInterval)
 		select {
@@ -117,6 +150,70 @@ func (a *DiscordAdapter) waitForReply(ctx context.Context, questionMessageID str
 		case <-timer.C:
 		}
 	}
+}
+
+func (a *DiscordAdapter) selectDiscordReaction(ctx context.Context, questionMessageID string, question Question) (Response, bool, error) {
+	if len(question.Reactions) == 0 {
+		return Response{}, false, nil
+	}
+	allowed := normalizedDiscordUserIDs(question.AllowedUserIDs)
+	if len(allowed) == 0 && !a.config.AllowAnyUser {
+		return Response{}, false, nil
+	}
+	for _, reaction := range question.Reactions {
+		users, err := a.reactionUsers(ctx, questionMessageID, reaction.Emoji)
+		if err != nil {
+			return Response{}, false, err
+		}
+		if user, ok := selectAuthorizedReactionUser(users, allowed, a.config.AllowAnyUser); ok {
+			return Response{
+				Text:           reaction.Value,
+				Source:         "reaction",
+				AuthorID:       user.ID,
+				AuthorUsername: user.Username,
+				MessageID:      questionMessageID,
+				ChannelID:      a.config.ChannelID,
+				ReactionEmoji:  reaction.Emoji,
+			}, true, nil
+		}
+	}
+	return Response{}, false, nil
+}
+
+func (a *DiscordAdapter) reactionUsers(ctx context.Context, messageID, emoji string) ([]discordUser, error) {
+	values := url.Values{}
+	values.Set("limit", "100")
+	path := "/channels/" + url.PathEscape(a.config.ChannelID) +
+		"/messages/" + url.PathEscape(messageID) +
+		"/reactions/" + discordReactionPathEmoji(emoji)
+	var users []discordUser
+	if err := a.doJSON(ctx, http.MethodGet, path, values, nil, &users); err != nil {
+		return nil, fmt.Errorf("poll discord reactions for %q: %w", emoji, err)
+	}
+	return users, nil
+}
+
+// discordReactionPathEmoji encodes an emoji for Discord reaction path segments.
+// Unicode emojis are percent-encoded; custom emojis use name:id.
+func discordReactionPathEmoji(emoji string) string {
+	return url.PathEscape(strings.TrimSpace(emoji))
+}
+
+func selectAuthorizedReactionUser(users []discordUser, allowed map[string]struct{}, allowAnyUser bool) (discordUser, bool) {
+	for _, user := range users {
+		if user.Bot || strings.TrimSpace(user.ID) == "" {
+			continue
+		}
+		if len(allowed) > 0 {
+			if _, ok := allowed[user.ID]; !ok {
+				continue
+			}
+		} else if !allowAnyUser {
+			continue
+		}
+		return user, true
+	}
+	return discordUser{}, false
 }
 
 func (a *DiscordAdapter) channelMessagesAfter(ctx context.Context, messageID string) ([]discordMessage, error) {
