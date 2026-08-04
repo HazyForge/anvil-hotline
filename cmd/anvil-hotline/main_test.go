@@ -50,3 +50,51 @@ func TestRunRequiresQuestion(t *testing.T) {
 		t.Fatalf("error = %q, want question requirement", err)
 	}
 }
+
+func TestBuildReactionOptionsYesNoAndOverrides(t *testing.T) {
+	t.Parallel()
+
+	reactions, err := buildReactionOptions(stringList{"🔄=retry"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reactions) != 3 {
+		t.Fatalf("len(reactions) = %d, want 3", len(reactions))
+	}
+	if reactions[0].Emoji != "✅" || reactions[0].Value != "yes" {
+		t.Fatalf("first reaction = %+v, want ✅=yes", reactions[0])
+	}
+	if reactions[1].Emoji != "❌" || reactions[1].Value != "no" {
+		t.Fatalf("second reaction = %+v, want ❌=no", reactions[1])
+	}
+	if reactions[2].Emoji != "🔄" || reactions[2].Value != "retry" {
+		t.Fatalf("third reaction = %+v, want 🔄=retry", reactions[2])
+	}
+
+	overridden, err := buildReactionOptions(stringList{"✅=ship"}, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(overridden) != 2 {
+		t.Fatalf("len(overridden) = %d, want 2", len(overridden))
+	}
+	if overridden[0].Value != "ship" {
+		t.Fatalf("overridden yes value = %q, want ship", overridden[0].Value)
+	}
+}
+
+func TestRunHelpMentionsReactionFlags(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"ask", "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("run help returned error: %v", err)
+	}
+	help := stderr.String()
+	for _, want := range []string{"-reaction", "-yes-no-reactions"} {
+		if !strings.Contains(help, want) {
+			t.Fatalf("help missing %q: %q", want, help)
+		}
+	}
+}
