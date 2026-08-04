@@ -13,9 +13,19 @@ import (
 
 var ErrUnsupportedTransport = errors.New("unsupported feedback transport")
 
+// ReactionOption is one pre-applied emoji choice on the question message.
+// When an authorized human reacts with Emoji, Ask returns Value (or Emoji
+// when Value is empty) instead of requiring a typed reply.
+type ReactionOption struct {
+	Emoji string
+	Value string
+}
+
 // Question is one human escalation. Prompt is required; Context and RunName
 // are optional message enrichment. AllowedUserIDs is the fail-closed allowlist
 // for Discord replies unless the transport explicitly allows any non-bot user.
+// Reactions, when set, are pre-applied to the question so the human can click
+// a choice instead of typing; typed replies remain accepted.
 type Question struct {
 	Prompt         string
 	Context        string
@@ -24,15 +34,19 @@ type Question struct {
 	PollInterval   time.Duration
 	AllowedUserIDs []string
 	AcceptAnyAfter bool
+	Reactions      []ReactionOption
 }
 
 // Response is the accepted human reply after transport filtering.
+// Source is "reply" for a typed message or "reaction" for an emoji choice.
 type Response struct {
 	Text           string `json:"text"`
+	Source         string `json:"source,omitempty"`
 	AuthorID       string `json:"authorId,omitempty"`
 	AuthorUsername string `json:"authorUsername,omitempty"`
 	MessageID      string `json:"messageId,omitempty"`
 	ChannelID      string `json:"channelId,omitempty"`
+	ReactionEmoji  string `json:"reactionEmoji,omitempty"`
 }
 
 // Transport posts a question and waits for an authorized reply.
@@ -58,6 +72,11 @@ func (s Service) Ask(ctx context.Context, question Question) (Response, error) {
 	if question.PollInterval <= 0 {
 		question.PollInterval = 5 * time.Second
 	}
+	reactions, err := normalizeReactionOptions(question.Reactions)
+	if err != nil {
+		return Response{}, err
+	}
+	question.Reactions = reactions
 	return s.Transport.Ask(ctx, question)
 }
 
@@ -76,8 +95,88 @@ func FormatQuestionMessage(question Question) string {
 		builder.WriteString("\n\nContext:\n")
 		builder.WriteString(question.Context)
 	}
-	builder.WriteString("\n\nPlease reply directly to this message. The agent is waiting for an authorized reply.")
+	if len(question.Reactions) > 0 {
+		builder.WriteString("\n\nChoose a reaction")
+		if len(question.Reactions) > 1 {
+			builder.WriteString(" (click one)")
+		}
+		builder.WriteString(":\n")
+		for _, reaction := range question.Reactions {
+			builder.WriteString(reaction.Emoji)
+			builder.WriteString(" → `")
+			builder.WriteString(reaction.Value)
+			builder.WriteString("`\n")
+		}
+		builder.WriteString("\nOr reply directly to this message. The agent is waiting for an authorized choice.")
+	} else {
+		builder.WriteString("\n\nPlease reply directly to this message. The agent is waiting for an authorized reply.")
+	}
 	return limitRunes(builder.String(), 1900)
+}
+
+// ParseReactionOption parses "emoji=value" (preferred) or "emoji:value".
+// When no separator is present, the emoji is both the reaction and the returned
+// value. Colon form is skipped when the right side looks like a Discord custom
+// emoji id (all digits), so "thumbsup:1234567890" stays a single emoji token.
+func ParseReactionOption(raw string) (ReactionOption, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ReactionOption{}, errors.New("reaction option is empty")
+	}
+	emoji, value, ok := strings.Cut(raw, "=")
+	if !ok {
+		left, right, cut := strings.Cut(raw, ":")
+		if cut && right != "" && !isAllDigits(right) {
+			emoji, value = left, right
+		} else {
+			emoji, value = raw, ""
+		}
+	}
+	option := ReactionOption{
+		Emoji: strings.TrimSpace(emoji),
+		Value: strings.TrimSpace(value),
+	}
+	normalized, err := normalizeReactionOptions([]ReactionOption{option})
+	if err != nil {
+		return ReactionOption{}, err
+	}
+	return normalized[0], nil
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for _, r := range value {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizeReactionOptions(options []ReactionOption) ([]ReactionOption, error) {
+	if len(options) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(options))
+	out := make([]ReactionOption, 0, len(options))
+	for _, option := range options {
+		emoji := strings.TrimSpace(option.Emoji)
+		value := strings.TrimSpace(option.Value)
+		if emoji == "" {
+			return nil, errors.New("reaction emoji is required")
+		}
+		if value == "" {
+			value = emoji
+		}
+		if _, exists := seen[emoji]; exists {
+			return nil, errors.New("duplicate reaction emoji: " + emoji)
+		}
+		seen[emoji] = struct{}{}
+		out = append(out, ReactionOption{Emoji: emoji, Value: value})
+	}
+	return out, nil
 }
 
 func limitRunes(value string, limit int) string {
