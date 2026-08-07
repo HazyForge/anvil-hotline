@@ -9,3 +9,8 @@
 .env
 .env.*
 !.env.example
+
+# marketing site
+site/node_modules/
+site/dist/
+site/*.tsbuildinfo
