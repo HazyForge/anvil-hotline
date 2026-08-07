@@ -1,204 +1,183 @@
-import HeroCinematic from "../components/HeroCinematic";
-
 const GITHUB = "https://github.com/HazyForge/anvil-hotline";
 const README = "https://github.com/HazyForge/anvil-hotline#readme";
 
-const WHY = [
+const SESSION = [
+  { type: "meta", text: "anvil-hotline v0.1 — ask once, then proceed" },
+  { type: "cmd", text: "$ anvil-hotline ask \\" },
+  { type: "cmd", text: '    --question "May I flip flag X in prod?" \\' },
+  { type: "cmd", text: '    --context "run=anvil-codex-7f3k9" \\' },
+  { type: "cmd", text: "    --yes-no-reactions --timeout 30m" },
+  { type: "ask", text: "agent → #ops-human-line" },
+  { type: "ask", text: '  "May I flip flag X in prod? ✅ yes / ❌ no"' },
+  { type: "wait", text: "waiting for an authorized reply…" },
+  { type: "wait", text: "waiting…" },
+  { type: "answer", text: '✅ yes — replied by austin (2m 14s)' },
+  { type: "out", text: "yes" },
+  { type: "meta", text: "exit 0 — proceeding with the reply" },
+];
+
+const RULES = [
   {
-    label: "One narrow question",
+    n: "01",
+    title: "One narrow question",
     detail:
-      "Agents ask exactly what they need — with run context, not a sprawling conversation. The human never has to read a novel.",
+      "Agents ask exactly what they need, with run context. Never a sprawling conversation; never a request for a lecture.",
   },
   {
-    label: "Authorized answers",
+    n: "02",
+    title: "Authorized humans only",
     detail:
-      "An allowlist of Discord user IDs (or any member, in private channels). Only people you trust can answer the line.",
+      "An allowlist of Discord user IDs — or any member in a private channel. Only people you trust can answer the line.",
   },
   {
-    label: "Typed or one click",
+    n: "03",
+    title: "Typed, or one tap",
     detail:
-      "Reply with text, or tap an emoji — ✅ / ❌ / 🔄, or your own choices. The bot pre-applies the reactions on the message.",
+      "Reply with text, or tap an emoji — ✅ / ❌ / 🔄 or your own choices. The bot pre-applies the reactions on the message.",
   },
   {
-    label: "Ask and wait",
+    n: "04",
+    title: "Wait, then proceed",
     detail:
-      "The CLI blocks until an authorized reply arrives — with a configurable timeout — then continues with that answer.",
+      "The CLI blocks until an authorized reply arrives, with a configurable timeout, then continues with that answer.",
   },
 ];
 
-const PIPELINE = [
-  {
-    name: "Ask",
-    detail:
-      "anvil-hotline ask posts one narrow question with context: what the agent knows and what it needs the human to decide.",
-  },
-  {
-    name: "Wait",
-    detail:
-      "The line stays open until an authorized user answers — typed text or a pre-applied emoji reaction — or the timeout expires.",
-  },
-  {
-    name: "Answer",
-    detail:
-      "Stdout carries only the mapped reply — yes, no, proceed, retry — never secrets, never the surrounding noise.",
-  },
-  {
-    name: "Continue",
-    detail:
-      "The agent proceeds with the human's decision. No guessing, no unsafe defaults when the evidence isn't enough.",
-  },
+const COMPARE = [
+  { mode: "typed", label: "typed reply", value: '"proceed with the rollout"' },
+  { mode: "emoji", label: "emoji reply", value: "✅ → yes" },
+  { mode: "emoji", label: "emoji reply", value: "❌ → no" },
+  { mode: "emoji", label: "custom", value: "🔄 → retry" },
+];
+
+const EDGE = [
+  { tag: "timeout", text: "No reply before the timeout → anvil-hotline exits non-zero; the agent does NOT default." },
+  { tag: "unauthorized", text: "A stranger replies → ignored. Only allowlisted IDs (or any member in private channels) count." },
+  { tag: "audit", text: "Every ask, responder, and answer is logged — the loop stays observable." },
 ];
 
 export default function HomePage() {
   return (
-    <main>
-      <section className="hero">
-        <HeroCinematic />
-        <div className="hero-scrim" aria-hidden="true" />
-        <div className="container hero-inner">
-          <div className="hero-copy">
-            <div className="eyebrow">Open source · Go CLI</div>
-            <h1 className="display hero-title">
-              <span>Anvil</span>
-              <span className="hero-title-accent">Hotline</span>
-            </h1>
-            <p className="hero-tagline">
-              When agents need a <em>human</em>
-            </p>
-            <p className="hero-lead">
-              Anvil Hotline gives your agents one narrow question to ask when
-              they can't safely choose a next action. It posts to Discord,
-              waits for an authorized reply — typed or a reaction — and
-              continues only with that answer.
-            </p>
-            <div className="hero-chips">
-              <span className="chip">
-                <span className="chip-dot" />
-                v0.1 live
-              </span>
-              <span className="chip">Discord native</span>
-              <span className="chip">Emoji answers</span>
-              <span className="chip">Ask &amp; wait</span>
-            </div>
-            <div className="hero-cta">
-              <a className="btn btn-primary" href={README}>
-                Read the docs
-              </a>
-              <a className="btn btn-ghost" href={GITHUB}>
-                View on GitHub
-              </a>
-            </div>
+    <main className="askonce">
+      {/* Prompt line */}
+      <header className="promptbar">
+        <div className="promptbar-inner">
+          <span className="prompt-caret" aria-hidden="true" />
+          <span className="prompt-text">
+            anvil-hotline — ask one narrow question to an authorized human, then proceed
+          </span>
+        </div>
+      </header>
+
+      {/* Split-pane hero */}
+      <section className="split">
+        <div className="split-left">
+          <p className="kicker mono">Open source · Go CLI</p>
+          <h1 className="split-title">
+            Ask once.
+            <br />
+            <span className="split-accent">Then proceed.</span>
+          </h1>
+          <p className="split-lead">
+            Anvil Hotline is the checkpoint between autonomous work and judgment. When an agent has evidence
+            but not certainty, it posts one narrow question to Discord and waits — then continues only with the
+            human's answer.
+          </p>
+          <div className="split-cta">
+            <a className="btn btn-primary" href={README}>Read the docs</a>
+            <a className="btn btn-ghost" href={GITHUB}>View on GitHub</a>
           </div>
         </div>
-        <div className="hero-ticker" aria-hidden="true">
-          <div className="container hero-ticker-inner">
-            <span className="mono hero-ticker-label">Line</span>
-            <div className="hero-ticker-runs">
-              <span className="ticker-run">
-                <span className="ticker-dot live" />
-                <span className="ticker-name mono">anvil-codex-7f3k9</span>
-                <span className="ticker-phase">Awaiting reply</span>
-              </span>
-              <span className="ticker-run">
-                <span className="ticker-dot" />
-                <span className="ticker-name mono">release gate</span>
-                <span className="ticker-phase">Answered ✅</span>
-              </span>
-              <span className="ticker-run">
-                <span className="ticker-dot" />
-                <span className="ticker-name mono">rollback check</span>
-                <span className="ticker-phase">Answered ❌</span>
-              </span>
-              <span className="ticker-run">
-                <span className="ticker-dot" />
-                <span className="ticker-name mono">credential rotate</span>
-                <span className="ticker-phase">Answered ✅</span>
-              </span>
+        <div className="split-right">
+          <div className="terminal">
+            <div className="terminal-titlebar mono">
+              <span className="term-dot term-dot-r" />
+              <span className="term-dot term-dot-y" />
+              <span className="term-dot term-dot-g" />
+              <span className="term-name">agent:anvil-codex-7f3k9 — live session</span>
+            </div>
+            <div className="terminal-body">
+              <div className="terminal-video">
+                <img src="/hero/hero-poster.jpg" alt="" loading="eager" />
+                <video autoPlay muted loop playsInline poster="/hero/hero-poster.jpg" tabIndex={-1}>
+                  <source src="/hero/hero.mp4" type="video/mp4" />
+                </video>
+              </div>
+              <div className="terminal-lines">
+                {SESSION.map((l, i) => (
+                  <p key={i} className={`tline t-${l.type}`}>
+                    {l.type === "out" ? <span className="tprompt">$ </span> : null}
+                    {l.text}
+                  </p>
+                ))}
+              </div>
             </div>
           </div>
         </div>
       </section>
 
-      <section id="why" className="section">
-        <div className="container">
-          <div className="section-head">
-            <div className="eyebrow">Why we built it</div>
-            <h2 className="display section-title">
-              Agents shouldn't
-              <span className="soft"> guess</span>
-            </h2>
-            <p className="section-lead">
-              Autonomous work is only safe when the loop knows where the human
-              is. Anvil Hotline is the narrow checkpoint: when an agent has
-              evidence but not certainty, it asks one question and waits —
-              instead of improvising a dangerous default.
-            </p>
-          </div>
-          <div className="highlight-grid">
-            {WHY.map((item, index) => (
-              <article key={item.label} className="panel highlight-card">
-                <div className="mono highlight-index">
-                  {String(index + 1).padStart(2, "0")}
-                </div>
-                <h3 className="display highlight-title">{item.label}</h3>
-                <p>{item.detail}</p>
-              </article>
-            ))}
-          </div>
+      {/* Rules */}
+      <section className="section rules container">
+        <div className="section-label mono">Protocol — four rules</div>
+        <div className="rules-grid">
+          {RULES.map((r) => (
+            <article key={r.n} className="rule">
+              <span className="rule-n mono">{r.n}</span>
+              <h3 className="rule-title">{r.title}</h3>
+              <p className="rule-detail">{r.detail}</p>
+            </article>
+          ))}
         </div>
       </section>
 
-      <section id="pipeline" className="section section-alt">
-        <div className="container">
-          <div className="section-head">
-            <div className="eyebrow">Pipeline</div>
-            <h2 className="display section-title">
-              Ask. Wait.
-              <span className="soft"> Proceed.</span>
-            </h2>
-            <p className="section-lead">
-              One CLI, one contract: stdout carries only the human's decision.
-              The transport is swappable — Discord is the first implementation.
-            </p>
-          </div>
-          <div className="composition-grid">
-            {PIPELINE.map((item) => (
-              <article key={item.name} className="panel composition-card">
-                <h3 className="display composition-title">{item.name}</h3>
-                <p>{item.detail}</p>
-              </article>
-            ))}
-          </div>
+      {/* Reply matrix */}
+      <section className="section matrix container">
+        <div className="section-label mono">Reply protocol — typed or one tap</div>
+        <div className="matrix-grid">
+          {COMPARE.map((c, i) => (
+            <div key={i} className={`matrix-cell matrix-${c.mode}`}>
+              <span className="mono matrix-label">{c.label}</span>
+              <span className="matrix-value mono">{c.value}</span>
+            </div>
+          ))}
         </div>
       </section>
 
-      <section id="docs" className="section">
-        <div className="container panel cta-panel">
+      {/* Edge cases */}
+      <section className="section edge container">
+        <div className="section-label mono">Failure & audit</div>
+        <div className="edge-rows">
+          {EDGE.map((e) => (
+            <div key={e.tag} className="edge-row">
+              <span className={`edge-tag mono tag-${e.tag}`}>{e.tag}</span>
+              <span className="edge-text">{e.text}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+
+      {/* Install */}
+      <section className="section install">
+        <div className="container install-row">
           <div>
-            <div className="eyebrow">Open source</div>
-            <h2 className="display section-title">
-              Install, ask,
-              <span className="soft"> proceed</span>
-            </h2>
-            <p className="section-lead">
-              Apache-2.0 and swappable: one Discord bot token, one channel, an
-              allowlist — and your agents get a safe line to the people who
-              matter.
+            <h2 className="install-title">Open the line.</h2>
+            <p className="install-sub">
+              Apache-2.0, swappable transport, one bot token and an allowlist. Your agents get a safe line to
+              the people who matter.
             </p>
           </div>
-          <div className="cta-actions">
-            <a className="btn btn-primary" href={README}>
-              Read the docs
-            </a>
-            <a className="btn btn-ghost" href={GITHUB}>
-              View on GitHub
-            </a>
-            <a className="btn btn-ghost" href="https://github.com/HazyForge/anvil-hotline/releases">
-              Releases
-            </a>
-          </div>
+          <pre className="install-cmd"><code><span className="ic-prompt">$</span> go install github.com/hazyforge/anvil-hotline/cmd/anvil-hotline@latest</code></pre>
         </div>
       </section>
+
+      {/* Footer */}
+      <footer className="foot container">
+        <span className="mono">anvil-hotline v0.1 · {new Date().getFullYear()} Hazy Forge</span>
+        <span className="foot-links mono">
+          <a href={GITHUB}>github.com/HazyForge/anvil-hotline</a>
+          <a href="https://hazyforge.io">hazyforge.io</a>
+        </span>
+      </footer>
     </main>
   );
 }
