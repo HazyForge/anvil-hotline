@@ -1,15 +1,12 @@
 # Anvil Hotline site
 
-Marketing site for [Anvil Hotline](https://github.com/HazyForge/anvil-hotline), served at
-**https://anvil-hotline.hazyforge.io**.
+Marketing site for Anvil Hotline — **https://anvil-hotline.hazyforge.io**.
 
-## Direction (Ask Once redesign)
+## Direction (Semaphore Station)
 
-- Dark terminal-session theme: prompt bar, split hero (headline + live terminal window with the
-  ask/wait/answer session), protocol rules, reply matrix (typed vs emoji), failure/audit rows, install.
-- Bricolage Grotesque + Fira Code. Palette: terminal black #090B0D, command green #A6FF4D,
-  amber #FFC857, violet #7B61FF.
-- Hero film: gpt-image-1 terminal still + Grok image-to-video (locked-off macro, typing lines, keycap press).
+Poster-flat maritime signal-flag theme: yardarm header, yellow hoist hero with flag-hoist video plate,
+flat flag cards (HOIST/HOLD/REPLY/LOWER), reply signals (typed vs pennant), authorization manifest,
+navy rigging install, footer. Anton + Hanken Grotesk + Red Hat Mono. Palette #F4EFE3 / #C8102E / #FFC72C / #00308B.
 
 ## Local / container
 
