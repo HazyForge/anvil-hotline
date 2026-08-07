@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.7
-# Build from the anvil-hotline repository root:
+# Build from the call-scribe repository root:
 #   docker build -f site/Dockerfile -t ghcr.io/hazyforge/anvil-hotline-site:dev .
 
 FROM node:22-alpine AS build

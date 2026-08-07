@@ -1,29 +1,19 @@
 # Anvil Hotline site
 
-React + Vite + nginx marketing site for [Anvil Hotline](https://github.com/HazyForge/anvil-hotline),
-served at **https://anvil-hotline.hazyforge.io**.
+Marketing site for [Anvil Hotline](https://github.com/HazyForge/anvil-hotline), served at
+**https://anvil-hotline.hazyforge.io**.
 
-## Direction
+## Direction (Ask Once redesign)
 
-- Product face of the open-source Go CLI ("ask and wait" between agents and authorized humans).
-- Visual language: **signal red on graphite** (`#0f1117` / `#ff4b4b` / `#ff8a5c` / `#f4f7ff`) — same
-  design family as the Anvil Agents and Call Scribe sites, distinct palette.
-- Hero: a Grok Imagine film (cool-ice agent beam halted at a red signal gate, warm human lamp across
-  the divide) playing full-bleed behind the copy, poster fallback for reduced-motion/data-saver users.
+- Dark terminal-session theme: prompt bar, split hero (headline + live terminal window with the
+  ask/wait/answer session), protocol rules, reply matrix (typed vs emoji), failure/audit rows, install.
+- Bricolage Grotesque + Fira Code. Palette: terminal black #090B0D, command green #A6FF4D,
+  amber #FFC857, violet #7B61FF.
+- Hero film: gpt-image-1 terminal still + Grok image-to-video (locked-off macro, typing lines, keycap press).
 
-## Local development
-
-```bash
-cd site
-pnpm install
-pnpm dev
-```
-
-## Container
-
-Build from the **repository root**:
+## Local / container
 
 ```bash
+cd site && pnpm install && pnpm dev
 docker build -f site/Dockerfile -t ghcr.io/hazyforge/anvil-hotline-site:dev .
-docker run --rm -p 8080:8080 ghcr.io/hazyforge/anvil-hotline-site:dev
 ```
