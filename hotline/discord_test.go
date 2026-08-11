@@ -492,3 +492,44 @@ func TestFormatQuestionMessageIncludesReactions(t *testing.T) {
 		}
 	}
 }
+
+func TestFormatQuestionMessageDesignTreatsReplyAsFullAnswer(t *testing.T) {
+	t.Parallel()
+
+	message := FormatQuestionMessage(Question{
+		Prompt:        "Like this layout?",
+		FeedbackStyle: "design",
+		Reactions: []ReactionOption{
+			{Emoji: "✅", Value: "approve"},
+			{Emoji: "🔄", Value: "revise"},
+		},
+	})
+	for _, want := range []string{
+		"design review",
+		"either is enough",
+		"no reaction needed",
+		"reaction alone is enough",
+	} {
+		if !strings.Contains(strings.ToLower(message), strings.ToLower(want)) {
+			t.Fatalf("design message missing %q:\n%s", want, message)
+		}
+	}
+	if strings.Contains(strings.ToLower(message), "required") {
+		t.Fatalf("design message must not force notes:\n%s", message)
+	}
+}
+
+func TestDesignReviewReactions(t *testing.T) {
+	t.Parallel()
+
+	reactions, err := DesignReviewReactions(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reactions) != 5 { // 2 numbered + approve/revise/reject
+		t.Fatalf("len = %d, want 5", len(reactions))
+	}
+	if reactions[0].Value != "design-1" || reactions[1].Value != "design-2" {
+		t.Fatalf("numbered picks = %+v", reactions[:2])
+	}
+}
