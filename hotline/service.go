@@ -7,6 +7,9 @@ package hotline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"mime"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -21,11 +24,29 @@ type ReactionOption struct {
 	Value string
 }
 
+// Attachment is a local file to upload with the question (for example a design
+// mockup PNG). Path is required; Filename and ContentType are optional and
+// default from the path when empty.
+type Attachment struct {
+	Path        string
+	Filename    string
+	ContentType string
+}
+
 // Question is one human escalation. Prompt is required; Context and RunName
 // are optional message enrichment. AllowedUserIDs is the fail-closed allowlist
 // for Discord replies unless the transport explicitly allows any non-bot user.
 // Reactions, when set, are pre-applied to the question so the human can click
 // a choice instead of typing; typed replies remain accepted.
+// Attachments, when set, are uploaded as Discord message files so the human
+// can see images (or other files) while choosing a reaction or typing a reply.
+//
+// Feedback model (keep simple):
+//   - A typed reply with no reaction is a complete answer (full critique in Text).
+//   - A reaction with no typed reply is a complete answer (choice in Text).
+//   - CollectNotes is optional only: after a reaction, wait briefly for extra
+//     free-text if the human wants to add likes/dislikes. Never required.
+//   - Do not force notes after any reaction.
 type Question struct {
 	Prompt         string
 	Context        string
@@ -35,18 +56,32 @@ type Question struct {
 	AllowedUserIDs []string
 	AcceptAnyAfter bool
 	Reactions      []ReactionOption
+	Attachments    []Attachment
+	// CollectNotes, when true, waits NotesTimeout after a reaction for optional
+	// free-text. A reaction alone still completes if no notes arrive.
+	CollectNotes bool
+	NotesTimeout time.Duration
+	// FeedbackStyle controls the human-facing instructions in the Discord
+	// message. Empty/"default" keeps the classic ask wording. "design"
+	// treats react and free-text reply as equal complete answers.
+	FeedbackStyle string
 }
 
 // Response is the accepted human reply after transport filtering.
-// Source is "reply" for a typed message or "reaction" for an emoji choice.
+// Source is "reply" for a typed message, "reaction" for an emoji choice, or
+// "reaction+notes" when a reaction was chosen and optional free-text followed.
 type Response struct {
 	Text           string `json:"text"`
+	Notes          string `json:"notes,omitempty"`
 	Source         string `json:"source,omitempty"`
 	AuthorID       string `json:"authorId,omitempty"`
 	AuthorUsername string `json:"authorUsername,omitempty"`
 	MessageID      string `json:"messageId,omitempty"`
 	ChannelID      string `json:"channelId,omitempty"`
 	ReactionEmoji  string `json:"reactionEmoji,omitempty"`
+	// Choice is set for reactions (the mapped value). Free-text-only replies
+	// leave Choice empty; Text is the full answer.
+	Choice string `json:"choice,omitempty"`
 }
 
 // Transport posts a question and waits for an authorized reply.
@@ -77,13 +112,133 @@ func (s Service) Ask(ctx context.Context, question Question) (Response, error) {
 		return Response{}, err
 	}
 	question.Reactions = reactions
+	attachments, err := normalizeAttachments(question.Attachments)
+	if err != nil {
+		return Response{}, err
+	}
+	question.Attachments = attachments
+	question.FeedbackStyle = normalizeFeedbackStyle(question.FeedbackStyle)
+	if question.CollectNotes && question.NotesTimeout <= 0 {
+		question.NotesTimeout = 45 * time.Second
+	}
 	return s.Transport.Ask(ctx, question)
+}
+
+func normalizeFeedbackStyle(style string) string {
+	switch strings.ToLower(strings.TrimSpace(style)) {
+	case "", "default":
+		return "default"
+	case "design", "design-review", "mockup":
+		return "design"
+	default:
+		return strings.ToLower(strings.TrimSpace(style))
+	}
+}
+
+// DesignReviewReactions builds a common design-review reaction set for N
+// mockup variants (1–9), plus approve / revise / reject.
+// Numbered picks map to design-1 … design-N. Free-text replies are always a
+// complete answer without needing these reactions.
+func DesignReviewReactions(variantCount int) ([]ReactionOption, error) {
+	if variantCount < 0 {
+		return nil, errors.New("design review variant count must be >= 0")
+	}
+	if variantCount > 9 {
+		return nil, errors.New("design review supports at most 9 numbered variants")
+	}
+	// keycap digits 1-9
+	keycaps := []string{"1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"}
+	out := make([]ReactionOption, 0, variantCount+3)
+	for i := 0; i < variantCount; i++ {
+		out = append(out, ReactionOption{
+			Emoji: keycaps[i],
+			Value: fmt.Sprintf("design-%d", i+1),
+		})
+	}
+	out = append(out,
+		ReactionOption{Emoji: "✅", Value: "approve"},
+		ReactionOption{Emoji: "🔄", Value: "revise"},
+		ReactionOption{Emoji: "❌", Value: "reject"},
+	)
+	return normalizeReactionOptions(out)
+}
+
+func shouldCollectNotes(question Question, response Response) bool {
+	// Optional only — never force typed follow-up after a reaction.
+	return question.CollectNotes && response.Source == "reaction"
+}
+
+// MaxAttachments is the Discord multi-file limit for one message.
+const MaxAttachments = 10
+
+// MaxAttachmentBytes is a conservative per-file cap for non-boosted bots.
+const MaxAttachmentBytes = 25 * 1024 * 1024
+
+func normalizeAttachments(attachments []Attachment) ([]Attachment, error) {
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+	if len(attachments) > MaxAttachments {
+		return nil, fmt.Errorf("too many attachments: %d (max %d)", len(attachments), MaxAttachments)
+	}
+	out := make([]Attachment, 0, len(attachments))
+	for i, attachment := range attachments {
+		path := strings.TrimSpace(attachment.Path)
+		if path == "" {
+			return nil, fmt.Errorf("attachment %d path is required", i)
+		}
+		filename := strings.TrimSpace(attachment.Filename)
+		if filename == "" {
+			filename = filepath.Base(path)
+		}
+		if filename == "" || filename == "." || filename == string(filepath.Separator) {
+			return nil, fmt.Errorf("attachment %d filename is required", i)
+		}
+		contentType := strings.TrimSpace(attachment.ContentType)
+		if contentType == "" {
+			contentType = contentTypeFromFilename(filename)
+		}
+		out = append(out, Attachment{
+			Path:        path,
+			Filename:    filename,
+			ContentType: contentType,
+		})
+	}
+	return out, nil
+}
+
+func contentTypeFromFilename(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".pdf":
+		return "application/pdf"
+	case ".txt", ".md", ".log":
+		return "text/plain"
+	default:
+		if mime := mime.TypeByExtension(ext); mime != "" {
+			return mime
+		}
+		return "application/octet-stream"
+	}
 }
 
 // FormatQuestionMessage builds the Discord (or other chat) payload.
 func FormatQuestionMessage(question Question) string {
 	var builder strings.Builder
-	builder.WriteString("**Anvil Hotline — agent needs a reply**\n\n")
+	style := normalizeFeedbackStyle(question.FeedbackStyle)
+	if style == "design" {
+		builder.WriteString("**Anvil Hotline — design review**\n\n")
+	} else {
+		builder.WriteString("**Anvil Hotline — agent needs a reply**\n\n")
+	}
 	if question.RunName != "" {
 		builder.WriteString("AgentRun: `")
 		builder.WriteString(question.RunName)
@@ -107,8 +262,19 @@ func FormatQuestionMessage(question Question) string {
 			builder.WriteString(reaction.Value)
 			builder.WriteString("`\n")
 		}
-		builder.WriteString("\nOr reply directly to this message. The agent is waiting for an authorized choice.")
-	} else {
+	}
+
+	switch {
+	case style == "design":
+		builder.WriteString("\n**How to answer (either is enough)**\n")
+		builder.WriteString("• **Reply** with free-text: what you like vs what you don't — full answer, no reaction needed\n")
+		if len(question.Reactions) > 0 {
+			builder.WriteString("• **Or react** to pick a design / path — reaction alone is enough\n")
+		}
+		builder.WriteString("\nReply directly to this message when typing. The agent is waiting.")
+	case len(question.Reactions) > 0:
+		builder.WriteString("\nOr reply directly to this message (typed reply alone is a complete answer). The agent is waiting.")
+	default:
 		builder.WriteString("\n\nPlease reply directly to this message. The agent is waiting for an authorized reply.")
 	}
 	return limitRunes(builder.String(), 1900)

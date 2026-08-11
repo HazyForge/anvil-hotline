@@ -47,10 +47,23 @@ reply="$(anvil-hotline ask \
   --yes-no-reactions \
   --timeout 30m)"
 # returns "yes" or "no" when an authorized user clicks ✅ or ❌
+
+# Design review: attach mockups; free-text reply alone is a complete answer,
+# or react to pick a path (reaction alone is also complete — notes never forced)
+reply="$(anvil-hotline ask \
+  --design-review \
+  --attach docs/design/open-position-v1.png \
+  --attach docs/design/open-position-v2.png \
+  --question "Open position layout options — what do you like / not like?" \
+  --output json \
+  --timeout 30m)"
 ```
 
 Stdout is only the human reply text (or mapped reaction value; JSON with
 `--output json`). Errors go to stderr. Secrets must never be printed.
+
+**Feedback model:** typed reply without a reaction is a full answer. A reaction
+without typed text is also a full answer. Never require notes after a reaction.
 
 ### Emoji reaction choices
 
@@ -64,6 +77,11 @@ those emojis on the message, and accepts either:
 | --- | --- |
 | `--yes-no-reactions` / `ANVIL_HOTLINE_YES_NO_REACTIONS=true` | Pre-apply `✅=yes` and `❌=no` |
 | `--reaction emoji=value` / `ANVIL_HOTLINE_REACTIONS` | Custom choices; may be repeated or comma-separated |
+| `--attach path` / `ANVIL_HOTLINE_ATTACH` | Local file(s) to upload with the question; may be repeated or comma-separated (images render inline) |
+| `--design-review` / `ANVIL_HOTLINE_DESIGN_REVIEW=true` | Design mockup mode: numbered picks + approve/revise/reject; free-text reply alone is enough |
+| `--design-variants N` | Number of 1️⃣..N picks (default: attachment count) |
+| `--collect-notes` | Optional only: after a reaction, wait briefly for extra free-text (never required) |
+| `--feedback-style design` | Message wording that treats reply and reaction as equal complete answers |
 
 Examples:
 
@@ -97,6 +115,7 @@ was chosen.
 | `ANVIL_HOTLINE_ACCEPT_ANY_AFTER` | Accept first non-bot message after the question without requiring a Discord reply reference |
 | `ANVIL_HOTLINE_YES_NO_REACTIONS` | If `true`, pre-apply `✅=yes` and `❌=no` on the question |
 | `ANVIL_HOTLINE_REACTIONS` | Comma-separated `emoji=value` choices (e.g. `✅=yes,❌=no`) |
+| `ANVIL_HOTLINE_ATTACH` | Comma-separated local file paths to upload with the question |
 | `ANVIL_HOTLINE_TRANSPORT` | Transport name (default `discord`) |
 | `ANVIL_HOTLINE_OUTPUT` | Output format: `text` or `json` |
 | `ANVIL_HOTLINE_RUN` | Optional run name shown in the Discord message |

@@ -1,10 +1,15 @@
 package hotline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -328,6 +333,126 @@ func TestDiscordAdapterIgnoresUnauthorizedReaction(t *testing.T) {
 	}
 }
 
+func TestDiscordAdapterPostsMultipartAttachments(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	imagePath := filepath.Join(tmp, "design.png")
+	// Minimal PNG header + payload is enough for upload plumbing tests.
+	imageBytes := []byte{
+		0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+		0x00, 0x00, 0x00, 0x0d, 0x49, 0x48, 0x44, 0x52,
+	}
+	if err := os.WriteFile(imagePath, imageBytes, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var sawMultipart bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/channels/c123/messages":
+			contentType := r.Header.Get("Content-Type")
+			if !strings.HasPrefix(contentType, "multipart/form-data") {
+				t.Fatalf("content-type = %q, want multipart/form-data", contentType)
+			}
+			reader, err := r.MultipartReader()
+			if err != nil {
+				t.Fatal(err)
+			}
+			var payloadJSON string
+			var fileName string
+			var fileData []byte
+			for {
+				part, err := reader.NextPart()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				data, err := io.ReadAll(part)
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch part.FormName() {
+				case "payload_json":
+					payloadJSON = string(data)
+				case "files[0]":
+					fileName = part.FileName()
+					fileData = data
+				}
+			}
+			if !strings.Contains(payloadJSON, "Like this layout?") {
+				t.Fatalf("payload_json = %q, want question", payloadJSON)
+			}
+			if !strings.Contains(payloadJSON, `"filename":"design.png"`) {
+				t.Fatalf("payload_json = %q, want attachment metadata", payloadJSON)
+			}
+			if fileName != "design.png" {
+				t.Fatalf("file name = %q, want design.png", fileName)
+			}
+			if !bytes.Equal(fileData, imageBytes) {
+				t.Fatalf("file bytes mismatch: got %d want %d", len(fileData), len(imageBytes))
+			}
+			sawMultipart = true
+			_, _ = w.Write([]byte(`{"id":"100","channel_id":"c123","content":"question","author":{"id":"bot","bot":true}}`))
+		case r.Method == http.MethodPut:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/c123/messages":
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/reactions/"):
+			_, _ = w.Write([]byte(`[
+				{"id":"bot","username":"hotline","bot":true},
+				{"id":"u1","username":"Austin","bot":false}
+			]`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{
+		BotToken:   "test-token",
+		ChannelID:  "c123",
+		APIBaseURL: server.URL,
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	response, err := adapter.Ask(context.Background(), Question{
+		Prompt:         "Like this layout?",
+		PollInterval:   time.Millisecond,
+		Timeout:        time.Second,
+		AllowedUserIDs: []string{"u1"},
+		Reactions:      []ReactionOption{{Emoji: "✅", Value: "yes"}, {Emoji: "❌", Value: "no"}},
+		Attachments:    []Attachment{{Path: imagePath}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !sawMultipart {
+		t.Fatal("expected multipart upload")
+	}
+	if got, want := response.Text, "yes"; got != want {
+		t.Fatalf("response text = %q, want %q", got, want)
+	}
+}
+
+func TestNormalizeAttachmentsRejectsTooMany(t *testing.T) {
+	t.Parallel()
+
+	attachments := make([]Attachment, MaxAttachments+1)
+	for i := range attachments {
+		attachments[i] = Attachment{Path: fmt.Sprintf("/tmp/file-%d.png", i)}
+	}
+	_, err := normalizeAttachments(attachments)
+	if err == nil || !strings.Contains(err.Error(), "too many attachments") {
+		t.Fatalf("error = %v, want too many attachments", err)
+	}
+}
+
 func TestParseReactionOption(t *testing.T) {
 	t.Parallel()
 
@@ -365,5 +490,46 @@ func TestFormatQuestionMessageIncludesReactions(t *testing.T) {
 		if !strings.Contains(message, want) {
 			t.Fatalf("message missing %q:\n%s", want, message)
 		}
+	}
+}
+
+func TestFormatQuestionMessageDesignTreatsReplyAsFullAnswer(t *testing.T) {
+	t.Parallel()
+
+	message := FormatQuestionMessage(Question{
+		Prompt:        "Like this layout?",
+		FeedbackStyle: "design",
+		Reactions: []ReactionOption{
+			{Emoji: "✅", Value: "approve"},
+			{Emoji: "🔄", Value: "revise"},
+		},
+	})
+	for _, want := range []string{
+		"design review",
+		"either is enough",
+		"no reaction needed",
+		"reaction alone is enough",
+	} {
+		if !strings.Contains(strings.ToLower(message), strings.ToLower(want)) {
+			t.Fatalf("design message missing %q:\n%s", want, message)
+		}
+	}
+	if strings.Contains(strings.ToLower(message), "required") {
+		t.Fatalf("design message must not force notes:\n%s", message)
+	}
+}
+
+func TestDesignReviewReactions(t *testing.T) {
+	t.Parallel()
+
+	reactions, err := DesignReviewReactions(2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reactions) != 5 { // 2 numbered + approve/revise/reject
+		t.Fatalf("len = %d, want 5", len(reactions))
+	}
+	if reactions[0].Value != "design-1" || reactions[1].Value != "design-2" {
+		t.Fatalf("numbered picks = %+v", reactions[:2])
 	}
 }
