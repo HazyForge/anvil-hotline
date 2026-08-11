@@ -92,7 +92,7 @@ func TestRunHelpMentionsReactionFlags(t *testing.T) {
 		t.Fatalf("run help returned error: %v", err)
 	}
 	help := stderr.String()
-	for _, want := range []string{"-reaction", "-yes-no-reactions", "-attach", "-design-review", "-collect-notes"} {
+	for _, want := range []string{"-reaction", "-yes-no-reactions", "-attach", "-design-review"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q: %q", want, help)
 		}

@@ -48,22 +48,18 @@ reply="$(anvil-hotline ask \
   --timeout 30m)"
 # returns "yes" or "no" when an authorized user clicks ✅ or ❌
 
-# Design review: attach mockups; free-text reply alone is a complete answer,
-# or react to pick a path (reaction alone is also complete — notes never forced)
+# Design review: attach mockups and wait for a free-text reply
+# (what you like / don't like). Reply-based only — no reaction wait.
 reply="$(anvil-hotline ask \
   --design-review \
   --attach docs/design/open-position-v1.png \
   --attach docs/design/open-position-v2.png \
   --question "Open position layout options — what do you like / not like?" \
-  --output json \
   --timeout 30m)"
 ```
 
 Stdout is only the human reply text (or mapped reaction value; JSON with
 `--output json`). Errors go to stderr. Secrets must never be printed.
-
-**Feedback model:** typed reply without a reaction is a full answer. A reaction
-without typed text is also a full answer. Never require notes after a reaction.
 
 ### Emoji reaction choices
 
@@ -78,10 +74,8 @@ those emojis on the message, and accepts either:
 | `--yes-no-reactions` / `ANVIL_HOTLINE_YES_NO_REACTIONS=true` | Pre-apply `✅=yes` and `❌=no` |
 | `--reaction emoji=value` / `ANVIL_HOTLINE_REACTIONS` | Custom choices; may be repeated or comma-separated |
 | `--attach path` / `ANVIL_HOTLINE_ATTACH` | Local file(s) to upload with the question; may be repeated or comma-separated (images render inline) |
-| `--design-review` / `ANVIL_HOTLINE_DESIGN_REVIEW=true` | Design mockup mode: numbered picks + approve/revise/reject; free-text reply alone is enough |
-| `--design-variants N` | Number of 1️⃣..N picks (default: attachment count) |
-| `--collect-notes` | Optional only: after a reaction, wait briefly for extra free-text (never required) |
-| `--feedback-style design` | Message wording that treats reply and reaction as equal complete answers |
+| `--design-review` / `ANVIL_HOTLINE_DESIGN_REVIEW=true` | Design mockup mode: attach images, wait for a free-text Discord reply |
+| `--feedback-style design` | Message wording that asks for free-text design feedback |
 
 Examples:
 

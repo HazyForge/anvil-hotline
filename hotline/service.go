@@ -42,11 +42,9 @@ type Attachment struct {
 // can see images (or other files) while choosing a reaction or typing a reply.
 //
 // Feedback model (keep simple):
-//   - A typed reply with no reaction is a complete answer (full critique in Text).
-//   - A reaction with no typed reply is a complete answer (choice in Text).
-//   - CollectNotes is optional only: after a reaction, wait briefly for extra
-//     free-text if the human wants to add likes/dislikes. Never required.
-//   - Do not force notes after any reaction.
+//   - Prefer a typed Discord reply as the complete answer (likes/dislikes, pick, etc.).
+//   - Reactions remain optional first-class choices when configured; no second wait.
+//   - Attachments let the human see images while replying.
 type Question struct {
 	Prompt         string
 	Context        string
@@ -57,31 +55,22 @@ type Question struct {
 	AcceptAnyAfter bool
 	Reactions      []ReactionOption
 	Attachments    []Attachment
-	// CollectNotes, when true, waits NotesTimeout after a reaction for optional
-	// free-text. A reaction alone still completes if no notes arrive.
-	CollectNotes bool
-	NotesTimeout time.Duration
 	// FeedbackStyle controls the human-facing instructions in the Discord
 	// message. Empty/"default" keeps the classic ask wording. "design"
-	// treats react and free-text reply as equal complete answers.
+	// asks for a free-text reply about the attached mockups.
 	FeedbackStyle string
 }
 
 // Response is the accepted human reply after transport filtering.
-// Source is "reply" for a typed message, "reaction" for an emoji choice, or
-// "reaction+notes" when a reaction was chosen and optional free-text followed.
+// Source is "reply" for a typed message or "reaction" for an emoji choice.
 type Response struct {
 	Text           string `json:"text"`
-	Notes          string `json:"notes,omitempty"`
 	Source         string `json:"source,omitempty"`
 	AuthorID       string `json:"authorId,omitempty"`
 	AuthorUsername string `json:"authorUsername,omitempty"`
 	MessageID      string `json:"messageId,omitempty"`
 	ChannelID      string `json:"channelId,omitempty"`
 	ReactionEmoji  string `json:"reactionEmoji,omitempty"`
-	// Choice is set for reactions (the mapped value). Free-text-only replies
-	// leave Choice empty; Text is the full answer.
-	Choice string `json:"choice,omitempty"`
 }
 
 // Transport posts a question and waits for an authorized reply.
@@ -118,9 +107,6 @@ func (s Service) Ask(ctx context.Context, question Question) (Response, error) {
 	}
 	question.Attachments = attachments
 	question.FeedbackStyle = normalizeFeedbackStyle(question.FeedbackStyle)
-	if question.CollectNotes && question.NotesTimeout <= 0 {
-		question.NotesTimeout = 45 * time.Second
-	}
 	return s.Transport.Ask(ctx, question)
 }
 
@@ -133,39 +119,6 @@ func normalizeFeedbackStyle(style string) string {
 	default:
 		return strings.ToLower(strings.TrimSpace(style))
 	}
-}
-
-// DesignReviewReactions builds a common design-review reaction set for N
-// mockup variants (1–9), plus approve / revise / reject.
-// Numbered picks map to design-1 … design-N. Free-text replies are always a
-// complete answer without needing these reactions.
-func DesignReviewReactions(variantCount int) ([]ReactionOption, error) {
-	if variantCount < 0 {
-		return nil, errors.New("design review variant count must be >= 0")
-	}
-	if variantCount > 9 {
-		return nil, errors.New("design review supports at most 9 numbered variants")
-	}
-	// keycap digits 1-9
-	keycaps := []string{"1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣"}
-	out := make([]ReactionOption, 0, variantCount+3)
-	for i := 0; i < variantCount; i++ {
-		out = append(out, ReactionOption{
-			Emoji: keycaps[i],
-			Value: fmt.Sprintf("design-%d", i+1),
-		})
-	}
-	out = append(out,
-		ReactionOption{Emoji: "✅", Value: "approve"},
-		ReactionOption{Emoji: "🔄", Value: "revise"},
-		ReactionOption{Emoji: "❌", Value: "reject"},
-	)
-	return normalizeReactionOptions(out)
-}
-
-func shouldCollectNotes(question Question, response Response) bool {
-	// Optional only — never force typed follow-up after a reaction.
-	return question.CollectNotes && response.Source == "reaction"
 }
 
 // MaxAttachments is the Discord multi-file limit for one message.
@@ -266,14 +219,10 @@ func FormatQuestionMessage(question Question) string {
 
 	switch {
 	case style == "design":
-		builder.WriteString("\n**How to answer (either is enough)**\n")
-		builder.WriteString("• **Reply** with free-text: what you like vs what you don't — full answer, no reaction needed\n")
-		if len(question.Reactions) > 0 {
-			builder.WriteString("• **Or react** to pick a design / path — reaction alone is enough\n")
-		}
-		builder.WriteString("\nReply directly to this message when typing. The agent is waiting.")
+		builder.WriteString("\n**Reply** to this message with free-text feedback (what you like vs what you don't).")
+		builder.WriteString("\nThe agent is waiting for an authorized reply.")
 	case len(question.Reactions) > 0:
-		builder.WriteString("\nOr reply directly to this message (typed reply alone is a complete answer). The agent is waiting.")
+		builder.WriteString("\nOr reply directly to this message. The agent is waiting for an authorized choice.")
 	default:
 		builder.WriteString("\n\nPlease reply directly to this message. The agent is waiting for an authorized reply.")
 	}

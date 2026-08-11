@@ -86,22 +86,7 @@ func (a *DiscordAdapter) Ask(ctx context.Context, question Question) (Response, 
 	if err := a.applyReactions(ctx, prompt.ID, question.Reactions); err != nil {
 		return Response{}, err
 	}
-	response, err := a.waitForPrimaryAnswer(ctx, prompt.ID, question)
-	if err != nil {
-		return Response{}, err
-	}
-	if response.Source == "reply" {
-		// Free-text is the full critique; no second wait.
-		response.Choice = ""
-		return response, nil
-	}
-	if response.Source == "reaction" {
-		response.Choice = response.Text
-	}
-	if !shouldCollectNotes(question, response) {
-		return response, nil
-	}
-	return a.collectNotesAfterReaction(ctx, prompt.ID, question, response)
+	return a.waitForReply(ctx, prompt.ID, question)
 }
 
 func (a *DiscordAdapter) createMessage(ctx context.Context, content string, attachments []Attachment) (discordMessage, error) {
@@ -289,7 +274,7 @@ func (a *DiscordAdapter) createReaction(ctx context.Context, messageID, emoji st
 	return nil
 }
 
-func (a *DiscordAdapter) waitForPrimaryAnswer(ctx context.Context, questionMessageID string, question Question) (Response, error) {
+func (a *DiscordAdapter) waitForReply(ctx context.Context, questionMessageID string, question Question) (Response, error) {
 	pollInterval := question.PollInterval
 	if pollInterval <= 0 {
 		pollInterval = 5 * time.Second
@@ -320,49 +305,6 @@ func (a *DiscordAdapter) waitForPrimaryAnswer(ctx context.Context, questionMessa
 		case <-ctx.Done():
 			timer.Stop()
 			return Response{}, fmt.Errorf("wait for discord reply: %w", ctx.Err())
-		case <-timer.C:
-		}
-	}
-}
-
-// collectNotesAfterReaction optionally waits for free-text after a reaction.
-// Never required: if the human only reacts, return that reaction as the full answer.
-func (a *DiscordAdapter) collectNotesAfterReaction(ctx context.Context, questionMessageID string, question Question, primary Response) (Response, error) {
-	pollInterval := question.PollInterval
-	if pollInterval <= 0 {
-		pollInterval = 5 * time.Second
-	}
-	acceptAnyAfter := question.AcceptAnyAfter || a.config.AcceptAnyAfter
-
-	timeout := question.NotesTimeout
-	if timeout <= 0 {
-		timeout = 45 * time.Second
-	}
-	notesCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	for {
-		messages, err := a.channelMessagesAfter(notesCtx, questionMessageID)
-		if err != nil {
-			if notesCtx.Err() != nil {
-				return primary, nil
-			}
-			return Response{}, err
-		}
-		if message, ok := selectDiscordReply(messages, questionMessageID, a.config.ChannelID, question.AllowedUserIDs, a.config.AllowAnyUser, acceptAnyAfter); ok {
-			notes := strings.TrimSpace(message.Content)
-			if notes != "" {
-				primary.Notes = notes
-				primary.Source = "reaction+notes"
-				return primary, nil
-			}
-		}
-		timer := time.NewTimer(pollInterval)
-		select {
-		case <-notesCtx.Done():
-			timer.Stop()
-			// Reaction alone is a complete answer.
-			return primary, nil
 		case <-timer.C:
 		}
 	}
