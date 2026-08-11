@@ -46,6 +46,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 	var allowedUserIDs stringList
 	var reactionFlags stringList
+	var attachFlags stringList
 	question := flags.String("question", "", "question text to post")
 	questionFile := flags.String("question-file", "", "file containing question text, or '-' for stdin")
 	contextText := flags.String("context", "", "optional context text")
@@ -60,6 +61,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	yesNoReactions := flags.Bool("yes-no-reactions", envBoolFirst(false, "ANVIL_HOTLINE_YES_NO_REACTIONS"), "pre-apply ✅=yes and ❌=no reaction choices")
 	flags.Var(&allowedUserIDs, "allowed-user-id", "allowed Discord user id; may be repeated or comma-separated")
 	flags.Var(&reactionFlags, "reaction", "pre-applied emoji choice as emoji=value (e.g. ✅=yes); may be repeated or comma-separated")
+	flags.Var(&attachFlags, "attach", "local file path to attach to the question (repeatable; images render inline in Discord)")
 	discordToken := flags.String("discord-token", "", "Discord bot token")
 	discordChannelID := flags.String("discord-channel-id", "", "Discord channel id")
 	discordAPIBaseURL := flags.String("discord-api-base-url", "", "Discord API base URL")
@@ -75,6 +77,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	}
 	if envReactions := envFirst("ANVIL_HOTLINE_REACTIONS"); envReactions != "" {
 		_ = reactionFlags.Set(envReactions)
+	}
+	if envAttach := envFirst("ANVIL_HOTLINE_ATTACH"); envAttach != "" {
+		_ = attachFlags.Set(envAttach)
 	}
 
 	prompt, err := readTextInput(*question, *questionFile, stdin)
@@ -102,6 +107,10 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
+	attachments, err := buildAttachments(attachFlags)
+	if err != nil {
+		return err
+	}
 
 	adapter, err := buildTransport(*transport, discordTokenValue, discordChannelIDValue, discordAPIBaseURLValue, *acceptAnyAfter, *allowAnyUser)
 	if err != nil {
@@ -117,6 +126,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		AllowedUserIDs: allowedUserIDs,
 		AcceptAnyAfter: *acceptAnyAfter,
 		Reactions:      reactions,
+		Attachments:    attachments,
 	})
 	if err != nil {
 		return err
@@ -176,6 +186,24 @@ func buildReactionOptions(flags stringList, yesNo bool) ([]hotline.ReactionOptio
 		}
 	}
 	return reactions, nil
+}
+
+func buildAttachments(paths stringList) ([]hotline.Attachment, error) {
+	if len(paths) == 0 {
+		return nil, nil
+	}
+	attachments := make([]hotline.Attachment, 0, len(paths))
+	for _, path := range paths {
+		path = strings.TrimSpace(path)
+		if path == "" {
+			continue
+		}
+		attachments = append(attachments, hotline.Attachment{Path: path})
+	}
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+	return attachments, nil
 }
 
 func readTextInput(value, path string, stdin io.Reader) (string, error) {

@@ -92,9 +92,24 @@ func TestRunHelpMentionsReactionFlags(t *testing.T) {
 		t.Fatalf("run help returned error: %v", err)
 	}
 	help := stderr.String()
-	for _, want := range []string{"-reaction", "-yes-no-reactions"} {
+	for _, want := range []string{"-reaction", "-yes-no-reactions", "-attach"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q: %q", want, help)
 		}
+	}
+}
+
+func TestBuildAttachments(t *testing.T) {
+	t.Parallel()
+
+	got, err := buildAttachments(stringList{" /tmp/a.png ", " /tmp/b.jpg"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Path != "/tmp/a.png" || got[1].Path != "/tmp/b.jpg" {
+		t.Fatalf("paths = %#v", got)
 	}
 }

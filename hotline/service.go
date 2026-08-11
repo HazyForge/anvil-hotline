@@ -7,6 +7,9 @@ package hotline
 import (
 	"context"
 	"errors"
+	"fmt"
+	"mime"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -21,11 +24,22 @@ type ReactionOption struct {
 	Value string
 }
 
+// Attachment is a local file to upload with the question (for example a design
+// mockup PNG). Path is required; Filename and ContentType are optional and
+// default from the path when empty.
+type Attachment struct {
+	Path        string
+	Filename    string
+	ContentType string
+}
+
 // Question is one human escalation. Prompt is required; Context and RunName
 // are optional message enrichment. AllowedUserIDs is the fail-closed allowlist
 // for Discord replies unless the transport explicitly allows any non-bot user.
 // Reactions, when set, are pre-applied to the question so the human can click
 // a choice instead of typing; typed replies remain accepted.
+// Attachments, when set, are uploaded as Discord message files so the human
+// can see images (or other files) while choosing a reaction or typing a reply.
 type Question struct {
 	Prompt         string
 	Context        string
@@ -35,6 +49,7 @@ type Question struct {
 	AllowedUserIDs []string
 	AcceptAnyAfter bool
 	Reactions      []ReactionOption
+	Attachments    []Attachment
 }
 
 // Response is the accepted human reply after transport filtering.
@@ -77,7 +92,74 @@ func (s Service) Ask(ctx context.Context, question Question) (Response, error) {
 		return Response{}, err
 	}
 	question.Reactions = reactions
+	attachments, err := normalizeAttachments(question.Attachments)
+	if err != nil {
+		return Response{}, err
+	}
+	question.Attachments = attachments
 	return s.Transport.Ask(ctx, question)
+}
+
+// MaxAttachments is the Discord multi-file limit for one message.
+const MaxAttachments = 10
+
+// MaxAttachmentBytes is a conservative per-file cap for non-boosted bots.
+const MaxAttachmentBytes = 25 * 1024 * 1024
+
+func normalizeAttachments(attachments []Attachment) ([]Attachment, error) {
+	if len(attachments) == 0 {
+		return nil, nil
+	}
+	if len(attachments) > MaxAttachments {
+		return nil, fmt.Errorf("too many attachments: %d (max %d)", len(attachments), MaxAttachments)
+	}
+	out := make([]Attachment, 0, len(attachments))
+	for i, attachment := range attachments {
+		path := strings.TrimSpace(attachment.Path)
+		if path == "" {
+			return nil, fmt.Errorf("attachment %d path is required", i)
+		}
+		filename := strings.TrimSpace(attachment.Filename)
+		if filename == "" {
+			filename = filepath.Base(path)
+		}
+		if filename == "" || filename == "." || filename == string(filepath.Separator) {
+			return nil, fmt.Errorf("attachment %d filename is required", i)
+		}
+		contentType := strings.TrimSpace(attachment.ContentType)
+		if contentType == "" {
+			contentType = contentTypeFromFilename(filename)
+		}
+		out = append(out, Attachment{
+			Path:        path,
+			Filename:    filename,
+			ContentType: contentType,
+		})
+	}
+	return out, nil
+}
+
+func contentTypeFromFilename(filename string) string {
+	ext := strings.ToLower(filepath.Ext(filename))
+	switch ext {
+	case ".png":
+		return "image/png"
+	case ".jpg", ".jpeg":
+		return "image/jpeg"
+	case ".gif":
+		return "image/gif"
+	case ".webp":
+		return "image/webp"
+	case ".pdf":
+		return "application/pdf"
+	case ".txt", ".md", ".log":
+		return "text/plain"
+	default:
+		if mime := mime.TypeByExtension(ext); mime != "" {
+			return mime
+		}
+		return "application/octet-stream"
+	}
 }
 
 // FormatQuestionMessage builds the Discord (or other chat) payload.

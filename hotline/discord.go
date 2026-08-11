@@ -7,8 +7,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
+	"net/textproto"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -65,12 +69,17 @@ func (a *DiscordAdapter) Ask(ctx context.Context, question Question) (Response, 
 		return Response{}, err
 	}
 	question.Reactions = reactions
+	attachments, err := normalizeAttachments(question.Attachments)
+	if err != nil {
+		return Response{}, err
+	}
+	question.Attachments = attachments
 	if question.Timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, question.Timeout)
 		defer cancel()
 	}
-	prompt, err := a.createMessage(ctx, FormatQuestionMessage(question))
+	prompt, err := a.createMessage(ctx, FormatQuestionMessage(question), question.Attachments)
 	if err != nil {
 		return Response{}, err
 	}
@@ -80,7 +89,14 @@ func (a *DiscordAdapter) Ask(ctx context.Context, question Question) (Response, 
 	return a.waitForReply(ctx, prompt.ID, question)
 }
 
-func (a *DiscordAdapter) createMessage(ctx context.Context, content string) (discordMessage, error) {
+func (a *DiscordAdapter) createMessage(ctx context.Context, content string, attachments []Attachment) (discordMessage, error) {
+	if len(attachments) == 0 {
+		return a.createJSONMessage(ctx, content)
+	}
+	return a.createMultipartMessage(ctx, content, attachments)
+}
+
+func (a *DiscordAdapter) createJSONMessage(ctx context.Context, content string) (discordMessage, error) {
 	var message discordMessage
 	request := discordCreateMessageRequest{
 		Content: content,
@@ -95,6 +111,148 @@ func (a *DiscordAdapter) createMessage(ctx context.Context, content string) (dis
 		return discordMessage{}, errors.New("discord create message response did not include message id")
 	}
 	return message, nil
+}
+
+func (a *DiscordAdapter) createMultipartMessage(ctx context.Context, content string, attachments []Attachment) (discordMessage, error) {
+	payload := discordCreateMessageRequest{
+		Content: content,
+		AllowedMentions: discordAllowedMentions{
+			Parse: []string{},
+		},
+		Attachments: make([]discordAttachmentMeta, 0, len(attachments)),
+	}
+	for i, attachment := range attachments {
+		payload.Attachments = append(payload.Attachments, discordAttachmentMeta{
+			ID:       i,
+			Filename: attachment.Filename,
+		})
+	}
+	payloadJSON, err := json.Marshal(payload)
+	if err != nil {
+		return discordMessage{}, err
+	}
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	payloadPart, err := writer.CreatePart(textproto.MIMEHeader{
+		"Content-Disposition": []string{`form-data; name="payload_json"`},
+		"Content-Type":        []string{"application/json"},
+	})
+	if err != nil {
+		return discordMessage{}, err
+	}
+	if _, err := payloadPart.Write(payloadJSON); err != nil {
+		return discordMessage{}, err
+	}
+
+	for i, attachment := range attachments {
+		data, info, err := readAttachmentFile(attachment)
+		if err != nil {
+			return discordMessage{}, err
+		}
+		_ = info
+		header := textproto.MIMEHeader{}
+		header.Set("Content-Disposition", fmt.Sprintf(
+			`form-data; name="files[%d]"; filename="%s"`,
+			i,
+			escapeMultipartFilename(attachment.Filename),
+		))
+		header.Set("Content-Type", attachment.ContentType)
+		part, err := writer.CreatePart(header)
+		if err != nil {
+			return discordMessage{}, err
+		}
+		if _, err := part.Write(data); err != nil {
+			return discordMessage{}, err
+		}
+	}
+	if err := writer.Close(); err != nil {
+		return discordMessage{}, err
+	}
+
+	var message discordMessage
+	if err := a.doMultipart(ctx, http.MethodPost, "/channels/"+url.PathEscape(a.config.ChannelID)+"/messages", writer.FormDataContentType(), body.Bytes(), &message); err != nil {
+		return discordMessage{}, fmt.Errorf("post discord question with attachments: %w", err)
+	}
+	if strings.TrimSpace(message.ID) == "" {
+		return discordMessage{}, errors.New("discord create message response did not include message id")
+	}
+	return message, nil
+}
+
+func readAttachmentFile(attachment Attachment) ([]byte, os.FileInfo, error) {
+	// Path is operator-supplied via CLI/library; not concatenated from untrusted input.
+	info, err := os.Stat(attachment.Path) // #nosec G304 -- intentional operator-supplied path
+	if err != nil {
+		return nil, nil, fmt.Errorf("attachment %q: %w", attachment.Filename, err)
+	}
+	if !info.Mode().IsRegular() {
+		return nil, nil, fmt.Errorf("attachment %q is not a regular file", attachment.Filename)
+	}
+	if info.Size() <= 0 {
+		return nil, nil, fmt.Errorf("attachment %q is empty", attachment.Filename)
+	}
+	if info.Size() > MaxAttachmentBytes {
+		return nil, nil, fmt.Errorf("attachment %q exceeds %d bytes", attachment.Filename, MaxAttachmentBytes)
+	}
+	data, err := os.ReadFile(attachment.Path) // #nosec G304 -- intentional operator-supplied path
+	if err != nil {
+		return nil, nil, fmt.Errorf("read attachment %q: %w", attachment.Filename, err)
+	}
+	return data, info, nil
+}
+
+func escapeMultipartFilename(filename string) string {
+	// Keep basename only and strip quotes that would break the disposition header.
+	base := filepath.Base(filename)
+	base = strings.ReplaceAll(base, `"`, "")
+	base = strings.ReplaceAll(base, "\r", "")
+	base = strings.ReplaceAll(base, "\n", "")
+	if base == "" || base == "." {
+		return "attachment.bin"
+	}
+	return base
+}
+
+func (a *DiscordAdapter) doMultipart(ctx context.Context, method, path, contentType string, body []byte, out any) error {
+	for attempt := 0; ; attempt++ {
+		endpoint := a.config.APIBaseURL + path
+		request, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Authorization", "Bot "+a.config.BotToken)
+		request.Header.Set("User-Agent", a.config.UserAgent)
+		request.Header.Set("Content-Type", contentType)
+		response, err := a.client.Do(request)
+		if err != nil {
+			return err
+		}
+		if response.StatusCode == http.StatusTooManyRequests && attempt < 5 {
+			delay := discordRetryDelay(response.Body, response.Header.Get("Retry-After"))
+			response.Body.Close()
+			timer := time.NewTimer(delay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return ctx.Err()
+			case <-timer.C:
+				continue
+			}
+		}
+		defer response.Body.Close()
+		if response.StatusCode < 200 || response.StatusCode > 299 {
+			respBody, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+			return fmt.Errorf("discord API %s %s returned %s: %s", method, path, response.Status, strings.TrimSpace(string(respBody)))
+		}
+		if out == nil {
+			return nil
+		}
+		if err := json.NewDecoder(response.Body).Decode(out); err != nil {
+			return err
+		}
+		return nil
+	}
 }
 
 func (a *DiscordAdapter) applyReactions(ctx context.Context, messageID string, reactions []ReactionOption) error {
@@ -341,8 +499,14 @@ func discordRetryDelay(body io.Reader, retryAfterHeader string) time.Duration {
 }
 
 type discordCreateMessageRequest struct {
-	Content         string                 `json:"content"`
-	AllowedMentions discordAllowedMentions `json:"allowed_mentions"`
+	Content         string                  `json:"content"`
+	AllowedMentions discordAllowedMentions  `json:"allowed_mentions"`
+	Attachments     []discordAttachmentMeta `json:"attachments,omitempty"`
+}
+
+type discordAttachmentMeta struct {
+	ID       int    `json:"id"`
+	Filename string `json:"filename"`
 }
 
 type discordAllowedMentions struct {

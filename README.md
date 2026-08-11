@@ -47,6 +47,13 @@ reply="$(anvil-hotline ask \
   --yes-no-reactions \
   --timeout 30m)"
 # returns "yes" or "no" when an authorized user clicks ✅ or ❌
+
+# Attach image mockups (or other files) so the human can react on a design
+reply="$(anvil-hotline ask \
+  --question "Do you like this Open Position layout?" \
+  --attach docs/design/open-position-v1.png \
+  --yes-no-reactions \
+  --timeout 30m)"
 ```
 
 Stdout is only the human reply text (or mapped reaction value; JSON with
@@ -64,6 +71,7 @@ those emojis on the message, and accepts either:
 | --- | --- |
 | `--yes-no-reactions` / `ANVIL_HOTLINE_YES_NO_REACTIONS=true` | Pre-apply `✅=yes` and `❌=no` |
 | `--reaction emoji=value` / `ANVIL_HOTLINE_REACTIONS` | Custom choices; may be repeated or comma-separated |
+| `--attach path` / `ANVIL_HOTLINE_ATTACH` | Local file(s) to upload with the question; may be repeated or comma-separated (images render inline) |
 
 Examples:
 
@@ -97,6 +105,7 @@ was chosen.
 | `ANVIL_HOTLINE_ACCEPT_ANY_AFTER` | Accept first non-bot message after the question without requiring a Discord reply reference |
 | `ANVIL_HOTLINE_YES_NO_REACTIONS` | If `true`, pre-apply `✅=yes` and `❌=no` on the question |
 | `ANVIL_HOTLINE_REACTIONS` | Comma-separated `emoji=value` choices (e.g. `✅=yes,❌=no`) |
+| `ANVIL_HOTLINE_ATTACH` | Comma-separated local file paths to upload with the question |
 | `ANVIL_HOTLINE_TRANSPORT` | Transport name (default `discord`) |
 | `ANVIL_HOTLINE_OUTPUT` | Output format: `text` or `json` |
 | `ANVIL_HOTLINE_RUN` | Optional run name shown in the Discord message |
