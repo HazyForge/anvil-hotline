@@ -38,6 +38,7 @@ export ANVIL_HOTLINE_ALLOWED_USER_IDS=357735082519429122
 reply="$(anvil-hotline ask \
   --question "May I proceed with the proposed default? Reply yes or no." \
   --context "run=${ANVIL_HOTLINE_RUN:-local-test}" \
+  --idempotency-key "application=example;decision=proposed-default" \
   --timeout 30m)"
 printf '%s\n' "$reply"
 
@@ -100,6 +101,7 @@ was chosen.
 | `ANVIL_HOTLINE_TRANSPORT` | Transport name (default `discord`) |
 | `ANVIL_HOTLINE_OUTPUT` | Output format: `text` or `json` |
 | `ANVIL_HOTLINE_RUN` | Optional run name shown in the Discord message |
+| `ANVIL_HOTLINE_IDEMPOTENCY_KEY` | Stable semantic question key used to deduplicate concurrent Discord posts by the same bot |
 | `ANVIL_HOTLINE_DISCORD_API_BASE_URL` | Optional Discord API base URL override |
 
 ## Fail-closed allowlist
@@ -136,8 +138,18 @@ resp, err := svc.Ask(ctx, hotline.Question{
 Use the hotline only after evidence gathering, with one narrow question, a
 proposed default, and a clear expected answer form. Prefer `--yes-no-reactions`
 (or explicit `--reaction` choices) when the answer is a short discrete choice so
-the human can click instead of typing. A reply is information; it does not
-expand Kubernetes, GitHub, or trading authority.
+the human can click instead of typing. Supply a stable `--idempotency-key` for
+automated calls. The Discord adapter converts it to an enforced nonce so
+concurrent retries from the same bot and channel reuse the first post. It also
+embeds a hash marker and searches channel history before posting, so a restarted
+caller resumes waiting on the existing question and can recover an already
+answered reply. Recovery accepts only a message authored by the currently
+authenticated bot with the same canonical question and choices; volatile run
+name/context may differ on restart, while reusing a key for a different question
+fails closed. Persist the semantic key in the caller's durable run status
+before invoking the CLI. JSON output includes `questionMessageId` for the
+recovered or newly posted prompt. A reply is
+information; it does not expand Kubernetes, GitHub, or trading authority.
 
 ## Security and release
 

@@ -51,12 +51,13 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	contextText := flags.String("context", "", "optional context text")
 	contextFile := flags.String("context-file", "", "file containing context text, or '-' for stdin")
 	runName := flags.String("run", envFirst("ANVIL_HOTLINE_RUN"), "optional run name for message context")
-	transport := flags.String("transport", envFirstDefault("discord", "ANVIL_HOTLINE_TRANSPORT"), "hotline transport")
-	timeoutRaw := flags.String("timeout", envFirstDefault("30m", "ANVIL_HOTLINE_TIMEOUT"), "maximum wait time; use 0 for no timeout")
-	pollRaw := flags.String("poll-interval", envFirstDefault("5s", "ANVIL_HOTLINE_POLL_INTERVAL"), "poll interval")
-	output := flags.String("output", envFirstDefault("text", "ANVIL_HOTLINE_OUTPUT"), "output format: text or json")
-	acceptAnyAfter := flags.Bool("accept-any-after", envBoolFirst(false, "ANVIL_HOTLINE_ACCEPT_ANY_AFTER"), "accept first non-bot message after the question instead of requiring a direct reply")
-	allowAnyUser := flags.Bool("allow-any-user", envBoolFirst(false, "ANVIL_HOTLINE_ALLOW_ANY_USER"), "allow replies from any non-bot channel member; disabled by default")
+	idempotencyKey := flags.String("idempotency-key", envFirst("ANVIL_HOTLINE_IDEMPOTENCY_KEY"), "stable semantic key used to deduplicate concurrent question posts")
+	transport := flags.String("transport", envFirstDefault("discord", "ANVIL_HOTLINE_TRANSPORT", "ANVIL_AGENT_FEEDBACK_TRANSPORT", "ANVIL_SOCIAL_TRANSPORT"), "hotline transport")
+	timeoutRaw := flags.String("timeout", envFirstDefault("30m", "ANVIL_HOTLINE_TIMEOUT", "ANVIL_AGENT_FEEDBACK_TIMEOUT"), "maximum wait time; use 0 for no timeout")
+	pollRaw := flags.String("poll-interval", envFirstDefault("5s", "ANVIL_HOTLINE_POLL_INTERVAL", "ANVIL_AGENT_FEEDBACK_POLL_INTERVAL"), "poll interval")
+	output := flags.String("output", envFirstDefault("text", "ANVIL_HOTLINE_OUTPUT", "ANVIL_AGENT_FEEDBACK_OUTPUT"), "output format: text or json")
+	acceptAnyAfter := flags.Bool("accept-any-after", envBoolFirst(false, "ANVIL_HOTLINE_ACCEPT_ANY_AFTER", "ANVIL_AGENT_FEEDBACK_ACCEPT_ANY_AFTER"), "accept first non-bot message after the question instead of requiring a direct reply")
+	allowAnyUser := flags.Bool("allow-any-user", envBoolFirst(false, "ANVIL_HOTLINE_ALLOW_ANY_USER", "ANVIL_AGENT_FEEDBACK_ALLOW_ANY_USER"), "allow replies from any non-bot channel member; disabled by default")
 	yesNoReactions := flags.Bool("yes-no-reactions", envBoolFirst(false, "ANVIL_HOTLINE_YES_NO_REACTIONS"), "pre-apply ✅=yes and ❌=no reaction choices")
 	flags.Var(&allowedUserIDs, "allowed-user-id", "allowed Discord user id; may be repeated or comma-separated")
 	flags.Var(&reactionFlags, "reaction", "pre-applied emoji choice as emoji=value (e.g. ✅=yes); may be repeated or comma-separated")
@@ -70,7 +71,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
-	if envAllowed := envFirst("ANVIL_HOTLINE_ALLOWED_USER_IDS"); envAllowed != "" {
+	if envAllowed := envFirst("ANVIL_HOTLINE_ALLOWED_USER_IDS", "ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS", "ANVIL_DISCORD_ALLOWED_USER_IDS"); envAllowed != "" {
 		_ = allowedUserIDs.Set(envAllowed)
 	}
 	if envReactions := envFirst("ANVIL_HOTLINE_REACTIONS"); envReactions != "" {
@@ -94,9 +95,9 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return fmt.Errorf("parse poll interval: %w", err)
 	}
 
-	discordTokenValue := envDefaultIfEmpty(*discordToken, "ANVIL_HOTLINE_DISCORD_BOT_TOKEN")
-	discordChannelIDValue := envDefaultIfEmpty(*discordChannelID, "ANVIL_HOTLINE_DISCORD_CHANNEL_ID")
-	discordAPIBaseURLValue := envDefaultIfEmpty(*discordAPIBaseURL, "ANVIL_HOTLINE_DISCORD_API_BASE_URL")
+	discordTokenValue := envDefaultIfEmpty(*discordToken, "ANVIL_HOTLINE_DISCORD_BOT_TOKEN", "ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN", "ANVIL_DISCORD_BOT_TOKEN", "DISCORD_BOT_TOKEN")
+	discordChannelIDValue := envDefaultIfEmpty(*discordChannelID, "ANVIL_HOTLINE_DISCORD_CHANNEL_ID", "ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID", "ANVIL_DISCORD_CHANNEL_ID", "DISCORD_CHANNEL_ID")
+	discordAPIBaseURLValue := envDefaultIfEmpty(*discordAPIBaseURL, "ANVIL_HOTLINE_DISCORD_API_BASE_URL", "ANVIL_AGENT_FEEDBACK_DISCORD_API_BASE_URL", "DISCORD_API_BASE_URL")
 
 	reactions, err := buildReactionOptions(reactionFlags, *yesNoReactions)
 	if err != nil {
@@ -112,6 +113,7 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		Prompt:         prompt,
 		Context:        contextBody,
 		RunName:        *runName,
+		IdempotencyKey: *idempotencyKey,
 		Timeout:        timeout,
 		PollInterval:   pollInterval,
 		AllowedUserIDs: allowedUserIDs,

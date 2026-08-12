@@ -3,6 +3,7 @@ package hotline
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -14,12 +15,14 @@ import (
 func TestDiscordAdapterWaitsForReplyToQuestion(t *testing.T) {
 	t.Parallel()
 
-	var polls int32
+	var historyCalls int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got, want := r.Header.Get("Authorization"), "Bot test-token"; got != want {
 			t.Fatalf("authorization = %q, want %q", got, want)
 		}
 		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/users/@me":
+			_, _ = w.Write([]byte(`{"id":"bot","bot":true}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/channels/c123/messages":
 			var payload discordCreateMessageRequest
 			if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
@@ -34,18 +37,20 @@ func TestDiscordAdapterWaitsForReplyToQuestion(t *testing.T) {
 			if len(payload.AllowedMentions.Parse) != 0 {
 				t.Fatalf("allowed mentions parse = %#v, want empty", payload.AllowedMentions.Parse)
 			}
-			_, _ = w.Write([]byte(`{"id":"100","channel_id":"c123","content":"question","author":{"id":"bot","bot":true}}`))
-		case r.Method == http.MethodGet && r.URL.Path == "/channels/c123/messages":
-			if got, want := r.URL.Query().Get("after"), "100"; got != want {
-				t.Fatalf("after = %q, want %q", got, want)
+			if payload.Nonce == "" || !payload.EnforceNonce {
+				t.Fatalf("nonce=%q enforce_nonce=%v, want enforced idempotency", payload.Nonce, payload.EnforceNonce)
 			}
-			if atomic.AddInt32(&polls, 1) == 1 {
+			_ = json.NewEncoder(w).Encode(discordMessage{ID: "100", ChannelID: "c123", Content: payload.Content, Author: discordUser{ID: "bot", Bot: true}})
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/c123/messages":
+			call := atomic.AddInt32(&historyCalls, 1)
+			if call <= 2 {
 				_, _ = w.Write([]byte(`[]`))
 				return
 			}
 			_, _ = w.Write([]byte(`[
 				{"id":"102","channel_id":"c123","content":"ignore non reply","author":{"id":"u1","username":"Austin","bot":false}},
-				{"id":"101","channel_id":"c123","content":"yes, restart it","author":{"id":"u1","username":"Austin","bot":false},"message_reference":{"message_id":"100","channel_id":"c123"}}
+				{"id":"101","channel_id":"c123","content":"yes, restart it","author":{"id":"u1","username":"Austin","bot":false},"message_reference":{"message_id":"100","channel_id":"c123"}},
+				{"id":"100","channel_id":"c123","content":"question","author":{"id":"bot","bot":true}}
 			]`))
 		default:
 			http.NotFound(w, r)
@@ -68,6 +73,7 @@ func TestDiscordAdapterWaitsForReplyToQuestion(t *testing.T) {
 		PollInterval:   time.Millisecond,
 		Timeout:        time.Second,
 		AllowedUserIDs: []string{"u1"},
+		IdempotencyKey: "application=release-lab;decision=adopt-staging",
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -77,6 +83,202 @@ func TestDiscordAdapterWaitsForReplyToQuestion(t *testing.T) {
 	}
 	if got, want := response.AuthorID, "u1"; got != want {
 		t.Fatalf("author id = %q, want %q", got, want)
+	}
+}
+
+func TestDiscordQuestionNonceIsStableAndBounded(t *testing.T) {
+	t.Parallel()
+
+	first := discordQuestionNonce("c123", " application=release-lab;decision=adopt-staging ")
+	second := discordQuestionNonce("c123", "application=release-lab;decision=adopt-staging")
+	if first != second {
+		t.Fatalf("nonce is not stable: %q != %q", first, second)
+	}
+	if len(first) != 25 {
+		t.Fatalf("nonce length = %d, want 25", len(first))
+	}
+	if got := discordQuestionNonce("c123", "  "); got != "" {
+		t.Fatalf("empty nonce = %q, want empty", got)
+	}
+	if other := discordQuestionNonce("c456", "application=release-lab;decision=adopt-staging"); other == first {
+		t.Fatalf("nonce should be channel scoped: %q", other)
+	}
+}
+
+func TestDiscordAdapterResumesExistingIdempotentQuestion(t *testing.T) {
+	t.Parallel()
+
+	key := "application=release-lab;decision=adopt-staging"
+	storedQuestion := Question{Prompt: "Which target?", Context: "AgentRun=old-run", IdempotencyKey: key}
+	question := Question{Prompt: "Which target?", Context: "AgentRun=new-run", IdempotencyKey: key, AllowedUserIDs: []string{"u1"}, Timeout: time.Second, PollInterval: time.Millisecond}
+	content := FormatQuestionMessage(storedQuestion)
+	var posts int32
+	var historyCalls int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/users/@me":
+			_, _ = w.Write([]byte(`{"id":"bot","bot":true}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/c123/messages":
+			if atomic.AddInt32(&historyCalls, 1) == 1 {
+				_ = json.NewEncoder(w).Encode([]discordMessage{{ID: "100", ChannelID: "c123", Content: content, Author: discordUser{ID: "bot", Bot: true}}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode([]discordMessage{{ID: "101", ChannelID: "c123", Content: "use staging", Author: discordUser{ID: "u1"}, MessageReference: &discordMessageReference{MessageID: "100", ChannelID: "c123"}}, {ID: "100", ChannelID: "c123", Content: content, Author: discordUser{ID: "bot", Bot: true}}})
+		case r.Method == http.MethodPost:
+			atomic.AddInt32(&posts, 1)
+			http.Error(w, "unexpected post", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{BotToken: "test", ChannelID: "c123", APIBaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := adapter.Ask(context.Background(), question)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if posts != 0 {
+		t.Fatalf("posts = %d, want 0", posts)
+	}
+	if response.Text != "use staging" || response.QuestionMessageID != "100" {
+		t.Fatalf("response = %#v, want resumed question 100", response)
+	}
+}
+
+func TestDiscordAdapterRecoversReplyBeyondFirstHistoryPage(t *testing.T) {
+	t.Parallel()
+
+	key := "application=release-lab;decision=old-answer"
+	question := Question{Prompt: "Which target?", IdempotencyKey: key, AllowedUserIDs: []string{"u1"}, Timeout: time.Second}
+	newer := make([]discordMessage, 100)
+	for i := range newer {
+		newer[i] = discordMessage{ID: fmt.Sprintf("%d", 250-i), ChannelID: "c123", Content: "newer chatter", Author: discordUser{ID: "u2"}}
+	}
+	older := []discordMessage{
+		{ID: "101", ChannelID: "c123", Content: "use observation", Author: discordUser{ID: "u1"}, MessageReference: &discordMessageReference{MessageID: "100", ChannelID: "c123"}},
+		{ID: "100", ChannelID: "c123", Content: FormatQuestionMessage(question), Author: discordUser{ID: "bot", Bot: true}},
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && r.URL.Path == "/users/@me" {
+			_, _ = w.Write([]byte(`{"id":"bot","bot":true}`))
+			return
+		}
+		if r.Method != http.MethodGet || r.URL.Path != "/channels/c123/messages" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Query().Get("before") == "151" {
+			_ = json.NewEncoder(w).Encode(older)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(newer)
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{BotToken: "test", ChannelID: "c123", APIBaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := adapter.Ask(context.Background(), question)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Text != "use observation" || response.QuestionMessageID != "100" {
+		t.Fatalf("response = %#v, want recovered old reply", response)
+	}
+}
+
+func TestDiscordAdapterRejectsSameKeyWithDifferentQuestion(t *testing.T) {
+	t.Parallel()
+
+	key := "application=release-lab;decision=one"
+	original := FormatQuestionMessage(Question{Prompt: "Original?", IdempotencyKey: key})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/users/@me":
+			_, _ = w.Write([]byte(`{"id":"bot","bot":true}`))
+		case "/channels/c123/messages":
+			_ = json.NewEncoder(w).Encode([]discordMessage{{ID: "100", Content: original, Author: discordUser{ID: "bot", Bot: true}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{BotToken: "test", ChannelID: "c123", APIBaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Ask(context.Background(), Question{Prompt: "Changed?", IdempotencyKey: key, AllowedUserIDs: []string{"u1"}, Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "different question content") {
+		t.Fatalf("error = %v, want reused-key content rejection", err)
+	}
+}
+
+func TestDiscordAdapterRejectsDeduplicatedPostWithDifferentQuestion(t *testing.T) {
+	t.Parallel()
+
+	key := "application=release-lab;decision=race"
+	existing := FormatQuestionMessage(Question{Prompt: "Other concurrent wording?", IdempotencyKey: key})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/users/@me":
+			_, _ = w.Write([]byte(`{"id":"bot","bot":true}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/c123/messages":
+			_, _ = w.Write([]byte(`[]`))
+		case r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(discordMessage{ID: "100", ChannelID: "c123", Content: existing, Author: discordUser{ID: "bot", Bot: true}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{BotToken: "test", ChannelID: "c123", APIBaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = adapter.Ask(context.Background(), Question{Prompt: "Our wording?", IdempotencyKey: key, AllowedUserIDs: []string{"u1"}, Timeout: time.Second})
+	if err == nil || !strings.Contains(err.Error(), "different question content") {
+		t.Fatalf("error = %v, want deduplicated-post content rejection", err)
+	}
+}
+
+func TestDiscordAdapterIgnoresForeignBotMarker(t *testing.T) {
+	t.Parallel()
+
+	key := "application=release-lab;decision=one"
+	var posts int32
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/users/@me":
+			_, _ = w.Write([]byte(`{"id":"our-bot","bot":true}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/c123/messages":
+			_ = json.NewEncoder(w).Encode([]discordMessage{{ID: "90", Content: FormatQuestionMessage(Question{Prompt: "Changed?", IdempotencyKey: key}), Author: discordUser{ID: "foreign-bot", Bot: true}}})
+		case r.Method == http.MethodPost:
+			atomic.AddInt32(&posts, 1)
+			_ = json.NewEncoder(w).Encode(discordMessage{ID: "100", ChannelID: "c123", Author: discordUser{ID: "our-bot", Bot: true}})
+			cancel()
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{BotToken: "test", ChannelID: "c123", APIBaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = adapter.Ask(ctx, Question{Prompt: "Original?", IdempotencyKey: key, AllowedUserIDs: []string{"u1"}})
+	if posts != 1 {
+		t.Fatalf("posts = %d, want 1 after ignoring foreign bot", posts)
 	}
 }
 

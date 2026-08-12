@@ -70,23 +70,93 @@ func (a *DiscordAdapter) Ask(ctx context.Context, question Question) (Response, 
 		ctx, cancel = context.WithTimeout(ctx, question.Timeout)
 		defer cancel()
 	}
-	prompt, err := a.createMessage(ctx, FormatQuestionMessage(question))
+	var prompt discordMessage
+	marker := discordQuestionMarker(question.IdempotencyKey)
+	payloadMarker := discordQuestionPayloadMarker(question)
+	content := FormatQuestionMessage(question)
+	if marker != "" {
+		bot, botErr := a.currentUser(ctx)
+		if botErr != nil {
+			return Response{}, botErr
+		}
+		var found bool
+		prompt, found, err = a.findQuestionMessage(ctx, marker, payloadMarker, bot.ID)
+		if err != nil {
+			return Response{}, err
+		}
+		if !found {
+			prompt, err = a.createMessage(ctx, content, discordQuestionNonce(a.config.ChannelID, question.IdempotencyKey))
+			if err == nil && !strings.Contains(prompt.Content, payloadMarker) {
+				return Response{}, errors.New("idempotency key resolved to a discord message with different question content")
+			}
+		}
+	} else {
+		prompt, err = a.createMessage(ctx, content, "")
+	}
 	if err != nil {
 		return Response{}, err
 	}
 	if err := a.applyReactions(ctx, prompt.ID, question.Reactions); err != nil {
 		return Response{}, err
 	}
-	return a.waitForReply(ctx, prompt.ID, question)
+	response, err := a.waitForReply(ctx, prompt.ID, question)
+	response.QuestionMessageID = prompt.ID
+	return response, err
 }
 
-func (a *DiscordAdapter) createMessage(ctx context.Context, content string) (discordMessage, error) {
+func (a *DiscordAdapter) currentUser(ctx context.Context) (discordUser, error) {
+	var user discordUser
+	if err := a.doJSON(ctx, http.MethodGet, "/users/@me", nil, nil, &user); err != nil {
+		return discordUser{}, fmt.Errorf("read authenticated discord bot identity: %w", err)
+	}
+	if strings.TrimSpace(user.ID) == "" || !user.Bot {
+		return discordUser{}, errors.New("discord authenticated user is not a bot with an id")
+	}
+	return user, nil
+}
+
+func (a *DiscordAdapter) findQuestionMessage(ctx context.Context, marker, payloadMarker, botID string) (discordMessage, bool, error) {
+	before := ""
+	for {
+		values := url.Values{}
+		values.Set("limit", "100")
+		if before != "" {
+			values.Set("before", before)
+		}
+		var messages []discordMessage
+		if err := a.doJSON(ctx, http.MethodGet, "/channels/"+url.PathEscape(a.config.ChannelID)+"/messages", values, nil, &messages); err != nil {
+			return discordMessage{}, false, fmt.Errorf("find existing discord question: %w", err)
+		}
+		for _, message := range messages {
+			if !message.Author.Bot || message.Author.ID != botID || !strings.Contains(message.Content, marker) {
+				continue
+			}
+			if !strings.Contains(message.Content, payloadMarker) {
+				return discordMessage{}, false, errors.New("idempotency key was already used by this bot for different question content")
+			}
+			return message, true, nil
+		}
+		if len(messages) < 100 {
+			return discordMessage{}, false, nil
+		}
+		before = strings.TrimSpace(messages[len(messages)-1].ID)
+		if before == "" {
+			return discordMessage{}, false, errors.New("discord history page did not include an oldest message id")
+		}
+	}
+}
+
+func (a *DiscordAdapter) createMessage(ctx context.Context, content, nonce string) (discordMessage, error) {
 	var message discordMessage
 	request := discordCreateMessageRequest{
 		Content: content,
 		AllowedMentions: discordAllowedMentions{
 			Parse: []string{},
 		},
+	}
+	if nonce != "" {
+		request.Nonce = nonce
+		request.EnforceNonce = true
 	}
 	if err := a.doJSON(ctx, http.MethodPost, "/channels/"+url.PathEscape(a.config.ChannelID)+"/messages", nil, request, &message); err != nil {
 		return discordMessage{}, fmt.Errorf("post discord question: %w", err)
@@ -217,14 +287,34 @@ func selectAuthorizedReactionUser(users []discordUser, allowed map[string]struct
 }
 
 func (a *DiscordAdapter) channelMessagesAfter(ctx context.Context, messageID string) ([]discordMessage, error) {
-	values := url.Values{}
-	values.Set("after", messageID)
-	values.Set("limit", "50")
-	var messages []discordMessage
-	if err := a.doJSON(ctx, http.MethodGet, "/channels/"+url.PathEscape(a.config.ChannelID)+"/messages", values, nil, &messages); err != nil {
-		return nil, fmt.Errorf("poll discord replies: %w", err)
+	const maxPages = 100
+	before := ""
+	var all []discordMessage
+	for page := 0; page < maxPages; page++ {
+		values := url.Values{}
+		values.Set("limit", "100")
+		if before != "" {
+			values.Set("before", before)
+		}
+		var messages []discordMessage
+		if err := a.doJSON(ctx, http.MethodGet, "/channels/"+url.PathEscape(a.config.ChannelID)+"/messages", values, nil, &messages); err != nil {
+			return nil, fmt.Errorf("poll discord replies: %w", err)
+		}
+		for _, message := range messages {
+			if strings.TrimSpace(message.ID) == strings.TrimSpace(messageID) {
+				return all, nil
+			}
+			all = append(all, message)
+		}
+		if len(messages) < 100 {
+			return all, nil
+		}
+		before = strings.TrimSpace(messages[len(messages)-1].ID)
+		if before == "" {
+			return nil, errors.New("discord reply page did not include an oldest message id")
+		}
 	}
-	return messages, nil
+	return nil, errors.New("discord reply history exceeded pagination limit")
 }
 
 func normalizedDiscordUserIDs(allowedUserIDs []string) map[string]struct{} {
@@ -343,6 +433,8 @@ func discordRetryDelay(body io.Reader, retryAfterHeader string) time.Duration {
 type discordCreateMessageRequest struct {
 	Content         string                 `json:"content"`
 	AllowedMentions discordAllowedMentions `json:"allowed_mentions"`
+	Nonce           string                 `json:"nonce,omitempty"`
+	EnforceNonce    bool                   `json:"enforce_nonce,omitempty"`
 }
 
 type discordAllowedMentions struct {
