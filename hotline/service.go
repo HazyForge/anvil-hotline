@@ -6,7 +6,9 @@ package hotline
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
 	"time"
 )
@@ -27,9 +29,13 @@ type ReactionOption struct {
 // Reactions, when set, are pre-applied to the question so the human can click
 // a choice instead of typing; typed replies remain accepted.
 type Question struct {
-	Prompt         string
-	Context        string
-	RunName        string
+	Prompt  string
+	Context string
+	RunName string
+	// IdempotencyKey is a caller-owned stable semantic key for one question.
+	// Discord receives a channel-scoped deterministic 25-character nonce with
+	// enforced uniqueness, and keyed history lookup supports caller restart.
+	IdempotencyKey string
 	Timeout        time.Duration
 	PollInterval   time.Duration
 	AllowedUserIDs []string
@@ -40,13 +46,14 @@ type Question struct {
 // Response is the accepted human reply after transport filtering.
 // Source is "reply" for a typed message or "reaction" for an emoji choice.
 type Response struct {
-	Text           string `json:"text"`
-	Source         string `json:"source,omitempty"`
-	AuthorID       string `json:"authorId,omitempty"`
-	AuthorUsername string `json:"authorUsername,omitempty"`
-	MessageID      string `json:"messageId,omitempty"`
-	ChannelID      string `json:"channelId,omitempty"`
-	ReactionEmoji  string `json:"reactionEmoji,omitempty"`
+	Text              string `json:"text"`
+	Source            string `json:"source,omitempty"`
+	AuthorID          string `json:"authorId,omitempty"`
+	AuthorUsername    string `json:"authorUsername,omitempty"`
+	MessageID         string `json:"messageId,omitempty"`
+	ChannelID         string `json:"channelId,omitempty"`
+	ReactionEmoji     string `json:"reactionEmoji,omitempty"`
+	QuestionMessageID string `json:"questionMessageId,omitempty"`
 }
 
 // Transport posts a question and waits for an authorized reply.
@@ -66,6 +73,7 @@ func (s Service) Ask(ctx context.Context, question Question) (Response, error) {
 	question.Prompt = strings.TrimSpace(question.Prompt)
 	question.Context = strings.TrimSpace(question.Context)
 	question.RunName = strings.TrimSpace(question.RunName)
+	question.IdempotencyKey = strings.TrimSpace(question.IdempotencyKey)
 	if question.Prompt == "" {
 		return Response{}, errors.New("question prompt is required")
 	}
@@ -80,9 +88,51 @@ func (s Service) Ask(ctx context.Context, question Question) (Response, error) {
 	return s.Transport.Ask(ctx, question)
 }
 
+func discordQuestionNonce(channelID, key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(strings.TrimSpace(channelID) + "\x00" + key))
+	// Discord accepts at most 25 characters. Prefix the truncated digest so
+	// these nonces remain recognizable without exposing the semantic key.
+	return "anvil-" + fmt.Sprintf("%x", sum[:])[:19]
+}
+
+func discordQuestionMarker(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(key))
+	return "[anvil-hotline-key:" + fmt.Sprintf("%x", sum[:])[:32] + "]"
+}
+
+func discordQuestionPayloadMarker(question Question) string {
+	if strings.TrimSpace(question.IdempotencyKey) == "" {
+		return ""
+	}
+	var canonical strings.Builder
+	canonical.WriteString(strings.TrimSpace(question.Prompt))
+	for _, reaction := range question.Reactions {
+		canonical.WriteString("\x00")
+		canonical.WriteString(strings.TrimSpace(reaction.Emoji))
+		canonical.WriteString("=")
+		canonical.WriteString(strings.TrimSpace(reaction.Value))
+	}
+	sum := sha256.Sum256([]byte(canonical.String()))
+	return "[anvil-hotline-payload:" + fmt.Sprintf("%x", sum[:])[:32] + "]"
+}
+
 // FormatQuestionMessage builds the Discord (or other chat) payload.
 func FormatQuestionMessage(question Question) string {
 	var builder strings.Builder
+	if marker := discordQuestionMarker(question.IdempotencyKey); marker != "" {
+		builder.WriteString(marker)
+		builder.WriteString("\n")
+		builder.WriteString(discordQuestionPayloadMarker(question))
+		builder.WriteString("\n")
+	}
 	builder.WriteString("**Anvil Hotline — agent needs a reply**\n\n")
 	if question.RunName != "" {
 		builder.WriteString("AgentRun: `")

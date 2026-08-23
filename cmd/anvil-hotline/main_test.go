@@ -51,6 +51,25 @@ func TestRunRequiresQuestion(t *testing.T) {
 	}
 }
 
+func TestLegacyAgentFeedbackEnvironmentAliases(t *testing.T) {
+	t.Setenv("ANVIL_AGENT_FEEDBACK_TIMEOUT", "17m")
+	t.Setenv("ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS", "u1,u2")
+	t.Setenv("ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN", "legacy-token")
+	t.Setenv("ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID", "legacy-channel")
+	if got := envFirstDefault("30m", "ANVIL_HOTLINE_TIMEOUT", "ANVIL_AGENT_FEEDBACK_TIMEOUT"); got != "17m" {
+		t.Fatalf("timeout alias = %q, want 17m", got)
+	}
+	if got := envFirst("ANVIL_HOTLINE_ALLOWED_USER_IDS", "ANVIL_AGENT_FEEDBACK_ALLOWED_USER_IDS"); got != "u1,u2" {
+		t.Fatalf("allowed alias = %q, want u1,u2", got)
+	}
+	if got := envDefaultIfEmpty("", "ANVIL_HOTLINE_DISCORD_BOT_TOKEN", "ANVIL_AGENT_FEEDBACK_DISCORD_BOT_TOKEN"); got != "legacy-token" {
+		t.Fatalf("token alias = %q, want legacy-token", got)
+	}
+	if got := envDefaultIfEmpty("", "ANVIL_HOTLINE_DISCORD_CHANNEL_ID", "ANVIL_AGENT_FEEDBACK_DISCORD_CHANNEL_ID"); got != "legacy-channel" {
+		t.Fatalf("channel alias = %q, want legacy-channel", got)
+	}
+}
+
 func TestBuildReactionOptionsYesNoAndOverrides(t *testing.T) {
 	t.Parallel()
 
@@ -83,7 +102,7 @@ func TestBuildReactionOptionsYesNoAndOverrides(t *testing.T) {
 	}
 }
 
-func TestRunHelpMentionsReactionFlags(t *testing.T) {
+func TestRunHelpMentionsReactionAndIdempotencyFlags(t *testing.T) {
 	t.Parallel()
 
 	var stdout bytes.Buffer
@@ -92,7 +111,7 @@ func TestRunHelpMentionsReactionFlags(t *testing.T) {
 		t.Fatalf("run help returned error: %v", err)
 	}
 	help := stderr.String()
-	for _, want := range []string{"-reaction", "-yes-no-reactions"} {
+	for _, want := range []string{"-reaction", "-yes-no-reactions", "-idempotency-key"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q: %q", want, help)
 		}
