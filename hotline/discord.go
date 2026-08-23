@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"time"
 )
@@ -17,13 +18,17 @@ const defaultDiscordAPIBaseURL = "https://discord.com/api/v10"
 
 // DiscordConfig configures the Discord REST transport.
 type DiscordConfig struct {
-	BotToken       string
-	ChannelID      string
-	APIBaseURL     string
-	UserAgent      string
-	HTTPClient     *http.Client
-	AcceptAnyAfter bool
-	AllowAnyUser   bool
+	BotToken  string
+	ChannelID string
+	// ParentChannelID, when set, requires ChannelID to be a Discord thread
+	// directly under this parent. It prevents --thread-id from becoming an
+	// arbitrary channel read/write primitive.
+	ParentChannelID string
+	APIBaseURL      string
+	UserAgent       string
+	HTTPClient      *http.Client
+	AcceptAnyAfter  bool
+	AllowAnyUser    bool
 }
 
 // DiscordAdapter posts a channel message and polls for an authorized reply.
@@ -35,6 +40,7 @@ type DiscordAdapter struct {
 func NewDiscordAdapter(config DiscordConfig) (*DiscordAdapter, error) {
 	config.BotToken = strings.TrimSpace(config.BotToken)
 	config.ChannelID = strings.TrimSpace(config.ChannelID)
+	config.ParentChannelID = strings.TrimSpace(config.ParentChannelID)
 	config.APIBaseURL = strings.TrimRight(strings.TrimSpace(config.APIBaseURL), "/")
 	config.UserAgent = strings.TrimSpace(config.UserAgent)
 	if config.BotToken == "" {
@@ -57,6 +63,11 @@ func NewDiscordAdapter(config DiscordConfig) (*DiscordAdapter, error) {
 }
 
 func (a *DiscordAdapter) Ask(ctx context.Context, question Question) (Response, error) {
+	if a.config.ParentChannelID != "" {
+		if _, err := a.scopedThread(ctx, a.config.ChannelID); err != nil {
+			return Response{}, err
+		}
+	}
 	if len(normalizedDiscordUserIDs(question.AllowedUserIDs)) == 0 && !a.config.AllowAnyUser {
 		return Response{}, errors.New("at least one allowed Discord user id is required unless allow-any-user is explicitly enabled")
 	}
@@ -116,6 +127,10 @@ func (a *DiscordAdapter) currentUser(ctx context.Context) (discordUser, error) {
 }
 
 func (a *DiscordAdapter) findQuestionMessage(ctx context.Context, marker, payloadMarker, botID string) (discordMessage, bool, error) {
+	return a.findBotMessageInChannel(ctx, a.config.ChannelID, marker, payloadMarker, botID)
+}
+
+func (a *DiscordAdapter) findBotMessageInChannel(ctx context.Context, channelID, marker, payloadMarker, botID string) (discordMessage, bool, error) {
 	before := ""
 	for {
 		values := url.Values{}
@@ -124,7 +139,7 @@ func (a *DiscordAdapter) findQuestionMessage(ctx context.Context, marker, payloa
 			values.Set("before", before)
 		}
 		var messages []discordMessage
-		if err := a.doJSON(ctx, http.MethodGet, "/channels/"+url.PathEscape(a.config.ChannelID)+"/messages", values, nil, &messages); err != nil {
+		if err := a.doJSON(ctx, http.MethodGet, "/channels/"+url.PathEscape(channelID)+"/messages", values, nil, &messages); err != nil {
 			return discordMessage{}, false, fmt.Errorf("find existing discord question: %w", err)
 		}
 		for _, message := range messages {
@@ -147,6 +162,10 @@ func (a *DiscordAdapter) findQuestionMessage(ctx context.Context, marker, payloa
 }
 
 func (a *DiscordAdapter) createMessage(ctx context.Context, content, nonce string) (discordMessage, error) {
+	return a.createMessageInChannel(ctx, a.config.ChannelID, content, nonce)
+}
+
+func (a *DiscordAdapter) createMessageInChannel(ctx context.Context, channelID, content, nonce string) (discordMessage, error) {
 	var message discordMessage
 	request := discordCreateMessageRequest{
 		Content: content,
@@ -158,13 +177,261 @@ func (a *DiscordAdapter) createMessage(ctx context.Context, content, nonce strin
 		request.Nonce = nonce
 		request.EnforceNonce = true
 	}
-	if err := a.doJSON(ctx, http.MethodPost, "/channels/"+url.PathEscape(a.config.ChannelID)+"/messages", nil, request, &message); err != nil {
+	if err := a.doJSON(ctx, http.MethodPost, "/channels/"+url.PathEscape(channelID)+"/messages", nil, request, &message); err != nil {
 		return discordMessage{}, fmt.Errorf("post discord question: %w", err)
 	}
 	if strings.TrimSpace(message.ID) == "" {
 		return discordMessage{}, errors.New("discord create message response did not include message id")
 	}
 	return message, nil
+}
+
+func (a *DiscordAdapter) OpenThread(ctx context.Context, request ThreadRequest) (Thread, error) {
+	if len(normalizedDiscordUserIDs(request.AllowedUserIDs)) == 0 && !a.config.AllowAnyUser {
+		return Thread{}, errors.New("at least one allowed Discord user id is required unless allow-any-user is explicitly enabled")
+	}
+	bot, err := a.currentUser(ctx)
+	if err != nil {
+		return Thread{}, err
+	}
+	marker := discordThreadMarker(request.IdempotencyKey)
+	payloadMarker := discordThreadPayloadMarker(request)
+	prompt, found, err := a.findBotMessageInChannel(ctx, a.config.ChannelID, marker, payloadMarker, bot.ID)
+	if err != nil {
+		return Thread{}, err
+	}
+	if !found {
+		content := FormatThreadStarterMessage(request)
+		prompt, err = a.createMessageInChannel(ctx, a.config.ChannelID, content, discordQuestionNonce(a.config.ChannelID, "thread:"+request.IdempotencyKey))
+		if err != nil {
+			return Thread{}, err
+		}
+		if !strings.Contains(prompt.Content, payloadMarker) {
+			return Thread{}, errors.New("thread idempotency key resolved to a Discord message with different content")
+		}
+	}
+	if prompt.Thread != nil {
+		return a.threadFromChannel(*prompt.Thread, prompt.ID)
+	}
+	// Discord assigns a message-started thread the same snowflake as its source
+	// message. This makes a retry recoverable even if the process died after the
+	// thread was created but before its response was persisted.
+	if existing, getErr := a.getChannel(ctx, prompt.ID); getErr == nil {
+		return a.threadFromChannel(existing, prompt.ID)
+	}
+	channel, startErr := a.startThreadFromMessage(ctx, prompt.ID, request.Title, request.AutoArchiveMins)
+	if startErr != nil {
+		if existing, getErr := a.getChannel(ctx, prompt.ID); getErr == nil {
+			return a.threadFromChannel(existing, prompt.ID)
+		}
+		return Thread{}, startErr
+	}
+	return a.threadFromChannel(channel, prompt.ID)
+}
+
+func (a *DiscordAdapter) ThreadMessages(ctx context.Context, request ThreadMessagesRequest) (ThreadTranscript, error) {
+	thread, err := a.scopedThread(ctx, request.ThreadID)
+	if err != nil {
+		return ThreadTranscript{}, err
+	}
+	allowed := normalizedDiscordUserIDs(request.AllowedUserIDs)
+	if len(allowed) == 0 && !a.config.AllowAnyUser {
+		return ThreadTranscript{}, errors.New("at least one allowed Discord user id is required unless allow-any-user is explicitly enabled")
+	}
+	bot, err := a.currentUser(ctx)
+	if err != nil {
+		return ThreadTranscript{}, err
+	}
+	values := url.Values{}
+	values.Set("limit", fmt.Sprintf("%d", request.Limit))
+	if request.AfterMessageID != "" {
+		values.Set("after", request.AfterMessageID)
+	}
+	var messages []discordMessage
+	path := "/channels/" + url.PathEscape(request.ThreadID) + "/messages"
+	if err := a.doJSON(ctx, http.MethodGet, path, values, nil, &messages); err != nil {
+		return ThreadTranscript{}, fmt.Errorf("read Discord thread messages: %w", err)
+	}
+	sort.SliceStable(messages, func(i, j int) bool {
+		return discordSnowflakeLess(messages[i].ID, messages[j].ID)
+	})
+	transcript := ThreadTranscript{Thread: thread, Messages: []ThreadMessage{}}
+	for _, message := range messages {
+		if strings.TrimSpace(message.ID) != "" {
+			transcript.NextAfter = message.ID
+		}
+		text := strings.TrimSpace(message.Content)
+		if text == "" {
+			continue
+		}
+		role := ""
+		switch {
+		case message.Author.Bot && message.Author.ID == bot.ID:
+			role = "agent"
+		case !message.Author.Bot:
+			if len(allowed) > 0 {
+				if _, ok := allowed[message.Author.ID]; ok {
+					role = "human"
+				}
+			} else if a.config.AllowAnyUser {
+				role = "human"
+			}
+		}
+		if role == "" {
+			continue
+		}
+		transcript.Messages = append(transcript.Messages, ThreadMessage{
+			ID:             message.ID,
+			ThreadID:       request.ThreadID,
+			Text:           text,
+			Role:           role,
+			AuthorID:       message.Author.ID,
+			AuthorUsername: message.Author.Username,
+			Timestamp:      message.Timestamp,
+		})
+	}
+	return transcript, nil
+}
+
+func (a *DiscordAdapter) ReplyThread(ctx context.Context, request ThreadReplyRequest) (ThreadMessage, error) {
+	if _, err := a.scopedThread(ctx, request.ThreadID); err != nil {
+		return ThreadMessage{}, err
+	}
+	bot, err := a.currentUser(ctx)
+	if err != nil {
+		return ThreadMessage{}, err
+	}
+	content := formatThreadReply(request)
+	marker := discordThreadReplyMarker(request.IdempotencyKey)
+	payloadMarker := discordThreadReplyPayloadMarker(request)
+	if marker != "" {
+		message, found, findErr := a.findBotMessageInChannel(ctx, request.ThreadID, marker, payloadMarker, bot.ID)
+		if findErr != nil {
+			return ThreadMessage{}, findErr
+		}
+		if found {
+			return threadMessageFromDiscord(message, request.ThreadID, "agent"), nil
+		}
+	}
+	nonce := ""
+	if request.IdempotencyKey != "" {
+		nonce = discordQuestionNonce(request.ThreadID, "reply:"+request.IdempotencyKey)
+	}
+	message, err := a.createMessageInChannel(ctx, request.ThreadID, content, nonce)
+	if err != nil {
+		return ThreadMessage{}, err
+	}
+	if payloadMarker != "" && !strings.Contains(message.Content, payloadMarker) {
+		return ThreadMessage{}, errors.New("thread reply idempotency key resolved to a Discord message with different content")
+	}
+	return threadMessageFromDiscord(message, request.ThreadID, "agent"), nil
+}
+
+func (a *DiscordAdapter) WaitThread(ctx context.Context, request ThreadWaitRequest) (ThreadMessage, error) {
+	if request.Timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, request.Timeout)
+		defer cancel()
+	}
+	cursor := request.AfterMessageID
+	for {
+		transcript, err := a.ThreadMessages(ctx, ThreadMessagesRequest{
+			ThreadID:       request.ThreadID,
+			AfterMessageID: cursor,
+			Limit:          100,
+			AllowedUserIDs: request.AllowedUserIDs,
+		})
+		if err != nil {
+			return ThreadMessage{}, err
+		}
+		for _, message := range transcript.Messages {
+			if message.Role == "human" {
+				return message, nil
+			}
+		}
+		if transcript.NextAfter != "" {
+			cursor = transcript.NextAfter
+		}
+		timer := time.NewTimer(request.PollInterval)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ThreadMessage{}, fmt.Errorf("wait for Discord thread message: %w", ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+func (a *DiscordAdapter) startThreadFromMessage(ctx context.Context, messageID, title string, autoArchiveMins int) (discordChannel, error) {
+	var channel discordChannel
+	request := discordStartThreadRequest{Name: title, AutoArchiveDuration: autoArchiveMins}
+	path := "/channels/" + url.PathEscape(a.config.ChannelID) + "/messages/" + url.PathEscape(messageID) + "/threads"
+	if err := a.doJSON(ctx, http.MethodPost, path, nil, request, &channel); err != nil {
+		return discordChannel{}, fmt.Errorf("start Discord thread: %w", err)
+	}
+	return channel, nil
+}
+
+func (a *DiscordAdapter) getChannel(ctx context.Context, channelID string) (discordChannel, error) {
+	var channel discordChannel
+	if err := a.doJSON(ctx, http.MethodGet, "/channels/"+url.PathEscape(channelID), nil, nil, &channel); err != nil {
+		return discordChannel{}, err
+	}
+	return channel, nil
+}
+
+func (a *DiscordAdapter) scopedThread(ctx context.Context, threadID string) (Thread, error) {
+	channel, err := a.getChannel(ctx, threadID)
+	if err != nil {
+		return Thread{}, fmt.Errorf("read Discord thread: %w", err)
+	}
+	return a.threadFromChannel(channel, channel.ID)
+}
+
+func (a *DiscordAdapter) threadFromChannel(channel discordChannel, starterMessageID string) (Thread, error) {
+	if !isDiscordThreadType(channel.Type) {
+		return Thread{}, errors.New("Discord channel is not a thread")
+	}
+	expectedParent := a.config.ChannelID
+	if a.config.ParentChannelID != "" {
+		expectedParent = a.config.ParentChannelID
+	}
+	if strings.TrimSpace(channel.ParentID) != strings.TrimSpace(expectedParent) {
+		return Thread{}, errors.New("Discord thread is outside the configured parent channel")
+	}
+	return Thread{
+		ID:               channel.ID,
+		ParentChannelID:  channel.ParentID,
+		StarterMessageID: starterMessageID,
+		GuildID:          channel.GuildID,
+		Name:             channel.Name,
+		Archived:         channel.ThreadMetadata.Archived,
+	}, nil
+}
+
+func isDiscordThreadType(channelType int) bool {
+	return channelType == 10 || channelType == 11 || channelType == 12
+}
+
+func discordSnowflakeLess(left, right string) bool {
+	left = strings.TrimLeft(strings.TrimSpace(left), "0")
+	right = strings.TrimLeft(strings.TrimSpace(right), "0")
+	if len(left) != len(right) {
+		return len(left) < len(right)
+	}
+	return left < right
+}
+
+func threadMessageFromDiscord(message discordMessage, threadID, role string) ThreadMessage {
+	return ThreadMessage{
+		ID:             message.ID,
+		ThreadID:       threadID,
+		Text:           strings.TrimSpace(message.Content),
+		Role:           role,
+		AuthorID:       message.Author.ID,
+		AuthorUsername: message.Author.Username,
+		Timestamp:      message.Timestamp,
+	}
 }
 
 func (a *DiscordAdapter) applyReactions(ctx context.Context, messageID string, reactions []ReactionOption) error {
@@ -446,7 +713,27 @@ type discordMessage struct {
 	ChannelID        string                   `json:"channel_id"`
 	Content          string                   `json:"content"`
 	Author           discordUser              `json:"author"`
+	Timestamp        string                   `json:"timestamp"`
 	MessageReference *discordMessageReference `json:"message_reference"`
+	Thread           *discordChannel          `json:"thread"`
+}
+
+type discordChannel struct {
+	ID             string                `json:"id"`
+	GuildID        string                `json:"guild_id"`
+	ParentID       string                `json:"parent_id"`
+	Name           string                `json:"name"`
+	Type           int                   `json:"type"`
+	ThreadMetadata discordThreadMetadata `json:"thread_metadata"`
+}
+
+type discordThreadMetadata struct {
+	Archived bool `json:"archived"`
+}
+
+type discordStartThreadRequest struct {
+	Name                string `json:"name"`
+	AutoArchiveDuration int    `json:"auto_archive_duration,omitempty"`
 }
 
 type discordUser struct {

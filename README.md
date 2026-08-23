@@ -53,6 +53,59 @@ reply="$(anvil-hotline ask \
 Stdout is only the human reply text (or mapped reaction value; JSON with
 `--output json`). Errors go to stderr. Secrets must never be printed.
 
+## Decision threads
+
+Use a thread when the human may need evidence or several follow-up exchanges
+before they can make a decision. The configured Discord channel remains the
+parent authority boundary: thread reads, replies, waits, and final questions
+fail closed if `--thread-id` is not directly under that parent.
+
+```bash
+thread_json="$(anvil-hotline thread open \
+  --title "Execution contract proposal" \
+  --message "Review proposed spec digest sha256:abc123." \
+  --context "This discussion is not approval." \
+  --idempotency-key "spec:execution:abc123")"
+thread_id="$(printf '%s' "$thread_json" | jq -r .id)"
+
+# Read the trusted transcript. Messages from other bots or users outside the
+# configured allowlist are omitted. nextAfter is the cursor for later reads.
+anvil-hotline thread messages --thread-id "$thread_id"
+
+# Continue the discussion without duplicating a reply after agent restart.
+anvil-hotline thread reply \
+  --thread-id "$thread_id" \
+  --message "Here is the requested crash-recovery sequence." \
+  --idempotency-key "spec:execution:abc123:recovery-answer-v1"
+
+# Block until the next authorized human message after the latest cursor.
+anvil-hotline thread wait \
+  --thread-id "$thread_id" \
+  --after-message-id "1234567890" \
+  --timeout 4h
+
+# A discussion never grants approval. Ask one final, exact question in the
+# same thread and bind it to the immutable proposal digest.
+anvil-hotline ask \
+  --thread-id "$thread_id" \
+  --question "Approve spec proposal sha256:abc123 exactly as presented?" \
+  --reaction "✅=approve" \
+  --reaction "🛠️=request-changes" \
+  --reaction "❌=reject" \
+  --idempotency-key "spec:execution:abc123:final-decision" \
+  --output json
+```
+
+`thread open`, `thread messages`, `thread reply`, and `thread wait` default to
+JSON output. `thread open` and keyed replies are restart-safe. A thread starter
+uses Discord's enforced nonce plus a bot-authored semantic marker; because a
+message-started Discord thread has the same ID as its starter message, a retry
+can recover a thread created immediately before a caller crash.
+
+The bot needs `VIEW_CHANNEL`, `READ_MESSAGE_HISTORY`, `CREATE_PUBLIC_THREADS`,
+and `SEND_MESSAGES_IN_THREADS` in the configured parent channel. Discord may
+automatically unarchive and join a visible thread when the bot sends a message.
+
 ### Emoji reaction choices
 
 When you pass reaction options, the bot posts the question, **pre-applies**
@@ -148,8 +201,12 @@ authenticated bot with the same canonical question and choices; volatile run
 name/context may differ on restart, while reusing a key for a different question
 fails closed. Persist the semantic key in the caller's durable run status
 before invoking the CLI. JSON output includes `questionMessageId` for the
-recovered or newly posted prompt. A reply is
-information; it does not expand Kubernetes, GitHub, or trading authority.
+recovered or newly posted prompt. For an ambiguous decision, open one stable
+thread and continue from its `nextAfter` cursor rather than posting disconnected
+questions. Treat the transcript as information only. Require a final explicit
+`ask --thread-id` decision bound to the immutable proposal or action digest;
+changing that proposal invalidates the approval. A reply does not expand
+Kubernetes, GitHub, or trading authority.
 
 ## Security and release
 

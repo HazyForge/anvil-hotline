@@ -111,9 +111,39 @@ func TestRunHelpMentionsReactionAndIdempotencyFlags(t *testing.T) {
 		t.Fatalf("run help returned error: %v", err)
 	}
 	help := stderr.String()
-	for _, want := range []string{"-reaction", "-yes-no-reactions", "-idempotency-key"} {
+	for _, want := range []string{"-reaction", "-yes-no-reactions", "-idempotency-key", "-thread-id"} {
 		if !strings.Contains(help, want) {
 			t.Fatalf("help missing %q: %q", want, help)
+		}
+	}
+}
+
+func TestRunThreadHelpListsConversationCommands(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"thread", "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("thread help returned error: %v", err)
+	}
+	for _, want := range []string{"thread <open|messages|reply|wait>", "open", "messages", "reply", "wait"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("thread help missing %q: %q", want, stderr.String())
+		}
+	}
+}
+
+func TestRunThreadOpenHelpDoesNotRequireCredentials(t *testing.T) {
+	t.Parallel()
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	if err := run([]string{"thread", "open", "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
+		t.Fatalf("thread open help returned error: %v", err)
+	}
+	for _, want := range []string{"-title", "-message", "-idempotency-key", "-auto-archive-minutes"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("thread open help missing %q: %q", want, stderr.String())
 		}
 	}
 }
