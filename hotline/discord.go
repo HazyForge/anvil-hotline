@@ -280,6 +280,10 @@ func (a *DiscordAdapter) ThreadMessages(ctx context.Context, request ThreadMessa
 		if role == "" {
 			continue
 		}
+		addressed := messageAddressedByBot(message, request.AddressedEmoji)
+		if request.UnaddressedOnly && role == "human" && addressed {
+			continue
+		}
 		transcript.Messages = append(transcript.Messages, ThreadMessage{
 			ID:             message.ID,
 			ThreadID:       request.ThreadID,
@@ -288,6 +292,7 @@ func (a *DiscordAdapter) ThreadMessages(ctx context.Context, request ThreadMessa
 			AuthorID:       message.Author.ID,
 			AuthorUsername: message.Author.Username,
 			Timestamp:      message.Timestamp,
+			Addressed:      addressed,
 		})
 	}
 	return transcript, nil
@@ -340,12 +345,13 @@ func (a *DiscordAdapter) WaitThread(ctx context.Context, request ThreadWaitReque
 			AfterMessageID: cursor,
 			Limit:          100,
 			AllowedUserIDs: request.AllowedUserIDs,
+			AddressedEmoji: request.AddressedEmoji,
 		})
 		if err != nil {
 			return ThreadMessage{}, err
 		}
 		for _, message := range transcript.Messages {
-			if message.Role == "human" {
+			if message.Role == "human" && !message.Addressed {
 				return message, nil
 			}
 		}
@@ -431,7 +437,28 @@ func threadMessageFromDiscord(message discordMessage, threadID, role string) Thr
 		AuthorID:       message.Author.ID,
 		AuthorUsername: message.Author.Username,
 		Timestamp:      message.Timestamp,
+		Addressed:      messageAddressedByBot(message, DefaultAddressedEmoji),
 	}
+}
+
+func (a *DiscordAdapter) AckThread(ctx context.Context, request ThreadAckRequest) error {
+	if _, err := a.scopedThread(ctx, request.ThreadID); err != nil {
+		return err
+	}
+	var message discordMessage
+	path := "/channels/" + url.PathEscape(request.ThreadID) +
+		"/messages/" + url.PathEscape(request.MessageID)
+	if err := a.doJSON(ctx, http.MethodGet, path, nil, nil, &message); err != nil {
+		return fmt.Errorf("read Discord thread message: %w", err)
+	}
+	if strings.TrimSpace(message.ChannelID) != "" &&
+		strings.TrimSpace(message.ChannelID) != strings.TrimSpace(request.ThreadID) {
+		return errors.New("Discord message is outside the thread")
+	}
+	if err := a.createReactionInChannel(ctx, request.ThreadID, request.MessageID, request.Emoji); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (a *DiscordAdapter) applyReactions(ctx context.Context, messageID string, reactions []ReactionOption) error {
@@ -444,13 +471,40 @@ func (a *DiscordAdapter) applyReactions(ctx context.Context, messageID string, r
 }
 
 func (a *DiscordAdapter) createReaction(ctx context.Context, messageID, emoji string) error {
-	path := "/channels/" + url.PathEscape(a.config.ChannelID) +
+	return a.createReactionInChannel(ctx, a.config.ChannelID, messageID, emoji)
+}
+
+func (a *DiscordAdapter) createReactionInChannel(ctx context.Context, channelID, messageID, emoji string) error {
+	path := "/channels/" + url.PathEscape(channelID) +
 		"/messages/" + url.PathEscape(messageID) +
 		"/reactions/" + discordReactionPathEmoji(emoji) + "/@me"
 	if err := a.doJSON(ctx, http.MethodPut, path, nil, nil, nil); err != nil {
 		return fmt.Errorf("create discord reaction: %w", err)
 	}
 	return nil
+}
+
+func messageAddressedByBot(message discordMessage, emoji string) bool {
+	emoji = normalizeAddressedEmoji(emoji)
+	for _, reaction := range message.Reactions {
+		if !reaction.Me {
+			continue
+		}
+		if discordEmojiEquals(reaction.Emoji, emoji) {
+			return true
+		}
+	}
+	return false
+}
+
+func discordEmojiEquals(got discordEmoji, want string) bool {
+	want = strings.TrimSpace(want)
+	name := strings.TrimSpace(got.Name)
+	id := strings.TrimSpace(got.ID)
+	if id != "" {
+		return want == name+":"+id || want == id
+	}
+	return want == name
 }
 
 func (a *DiscordAdapter) waitForReply(ctx context.Context, questionMessageID string, question Question) (Response, error) {
@@ -716,6 +770,18 @@ type discordMessage struct {
 	Timestamp        string                   `json:"timestamp"`
 	MessageReference *discordMessageReference `json:"message_reference"`
 	Thread           *discordChannel          `json:"thread"`
+	Reactions        []discordReaction        `json:"reactions"`
+}
+
+type discordReaction struct {
+	Count int          `json:"count"`
+	Me    bool         `json:"me"`
+	Emoji discordEmoji `json:"emoji"`
+}
+
+type discordEmoji struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type discordChannel struct {

@@ -21,8 +21,14 @@ type Thread struct {
 	Archived         bool   `json:"archived"`
 }
 
+// DefaultAddressedEmoji is the Discord reaction the bot applies to a human
+// thread message after the agent has processed it. Later reads and waits skip
+// those messages so the same reply is not handled twice.
+const DefaultAddressedEmoji = "✅"
+
 // ThreadMessage is one trusted conversation message. Role is "human" for an
 // allowed non-bot user and "agent" for the currently authenticated Hotline bot.
+// Addressed is true when this bot has already reacted with the addressed emoji.
 type ThreadMessage struct {
 	ID             string `json:"id"`
 	ThreadID       string `json:"threadId"`
@@ -31,6 +37,7 @@ type ThreadMessage struct {
 	AuthorID       string `json:"authorId"`
 	AuthorUsername string `json:"authorUsername,omitempty"`
 	Timestamp      string `json:"timestamp,omitempty"`
+	Addressed      bool   `json:"addressed"`
 }
 
 // ThreadTranscript is a chronological, trusted subset of one thread. Callers
@@ -59,6 +66,11 @@ type ThreadMessagesRequest struct {
 	AfterMessageID string
 	Limit          int
 	AllowedUserIDs []string
+	// AddressedEmoji is the bot reaction that marks a human message as already
+	// processed. Empty uses DefaultAddressedEmoji.
+	AddressedEmoji string
+	// UnaddressedOnly omits human messages the bot has already addressed.
+	UnaddressedOnly bool
 }
 
 // ThreadReplyRequest posts or resumes one bot-authored reply in a thread.
@@ -75,6 +87,17 @@ type ThreadWaitRequest struct {
 	Timeout        time.Duration
 	PollInterval   time.Duration
 	AllowedUserIDs []string
+	// AddressedEmoji is the bot reaction that marks a human message as already
+	// processed. Wait skips those messages. Empty uses DefaultAddressedEmoji.
+	AddressedEmoji string
+}
+
+// ThreadAckRequest marks one thread message as processed by applying the bot's
+// addressed reaction. Later waits and unaddressed reads skip it.
+type ThreadAckRequest struct {
+	ThreadID  string
+	MessageID string
+	Emoji     string
 }
 
 // ThreadTransport adds bounded, parent-scoped conversations to a transport.
@@ -83,6 +106,7 @@ type ThreadTransport interface {
 	ThreadMessages(ctx context.Context, request ThreadMessagesRequest) (ThreadTranscript, error)
 	ReplyThread(ctx context.Context, request ThreadReplyRequest) (ThreadMessage, error)
 	WaitThread(ctx context.Context, request ThreadWaitRequest) (ThreadMessage, error)
+	AckThread(ctx context.Context, request ThreadAckRequest) error
 }
 
 func (s Service) threadTransport() (ThreadTransport, error) {
@@ -145,6 +169,7 @@ func (s Service) ThreadMessages(ctx context.Context, request ThreadMessagesReque
 	if request.Limit < 1 || request.Limit > 100 {
 		return ThreadTranscript{}, errors.New("thread message limit must be between 1 and 100")
 	}
+	request.AddressedEmoji = normalizeAddressedEmoji(request.AddressedEmoji)
 	return transport.ThreadMessages(ctx, request)
 }
 
@@ -184,7 +209,33 @@ func (s Service) WaitThread(ctx context.Context, request ThreadWaitRequest) (Thr
 	if request.PollInterval <= 0 {
 		request.PollInterval = 5 * time.Second
 	}
+	request.AddressedEmoji = normalizeAddressedEmoji(request.AddressedEmoji)
 	return transport.WaitThread(ctx, request)
+}
+
+func (s Service) AckThread(ctx context.Context, request ThreadAckRequest) error {
+	transport, err := s.threadTransport()
+	if err != nil {
+		return err
+	}
+	request.ThreadID = strings.TrimSpace(request.ThreadID)
+	request.MessageID = strings.TrimSpace(request.MessageID)
+	if request.ThreadID == "" {
+		return errors.New("thread id is required")
+	}
+	if request.MessageID == "" {
+		return errors.New("message id is required")
+	}
+	request.Emoji = normalizeAddressedEmoji(request.Emoji)
+	return transport.AckThread(ctx, request)
+}
+
+func normalizeAddressedEmoji(emoji string) string {
+	emoji = strings.TrimSpace(emoji)
+	if emoji == "" {
+		return DefaultAddressedEmoji
+	}
+	return emoji
 }
 
 func discordThreadMarker(key string) string {

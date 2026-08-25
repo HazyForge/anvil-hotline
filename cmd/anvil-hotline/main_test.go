@@ -126,7 +126,7 @@ func TestRunThreadHelpListsConversationCommands(t *testing.T) {
 	if err := run([]string{"thread", "--help"}, strings.NewReader(""), &stdout, &stderr); err != nil {
 		t.Fatalf("thread help returned error: %v", err)
 	}
-	for _, want := range []string{"thread <open|messages|reply|wait>", "open", "messages", "reply", "wait"} {
+	for _, want := range []string{"thread <open|messages|reply|wait|ack>", "open", "messages", "reply", "wait", "ack"} {
 		if !strings.Contains(stderr.String(), want) {
 			t.Fatalf("thread help missing %q: %q", want, stderr.String())
 		}
