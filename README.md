@@ -78,11 +78,18 @@ anvil-hotline thread reply \
   --message "Here is the requested crash-recovery sequence." \
   --idempotency-key "spec:execution:abc123:recovery-answer-v1"
 
-# Block until the next authorized human message after the latest cursor.
-anvil-hotline thread wait \
+# Block until the next authorized human message that this bot has not
+# already marked addressed. After handling it, ack so later waits skip it.
+msg_json="$(anvil-hotline thread wait \
   --thread-id "$thread_id" \
-  --after-message-id "1234567890" \
-  --timeout 4h
+  --timeout 4h)"
+msg_id="$(printf '%s' "$msg_json" | jq -r .id)"
+anvil-hotline thread ack \
+  --thread-id "$thread_id" \
+  --message-id "$msg_id"
+
+# List only human replies this bot has not addressed yet.
+anvil-hotline thread messages --thread-id "$thread_id" --unaddressed
 
 # A discussion never grants approval. Ask one final, exact question in the
 # same thread and bind it to the immutable proposal digest.
@@ -96,15 +103,28 @@ anvil-hotline ask \
   --output json
 ```
 
-`thread open`, `thread messages`, `thread reply`, and `thread wait` default to
-JSON output. `thread open` and keyed replies are restart-safe. A thread starter
-uses Discord's enforced nonce plus a bot-authored semantic marker; because a
-message-started Discord thread has the same ID as its starter message, a retry
-can recover a thread created immediately before a caller crash.
+`thread open`, `thread messages`, `thread reply`, `thread wait`, and
+`thread ack` default to JSON output. `thread open` and keyed replies are
+restart-safe. A thread starter uses Discord's enforced nonce plus a
+bot-authored semantic marker; because a message-started Discord thread has
+the same ID as its starter message, a retry can recover a thread created
+immediately before a caller crash.
+
+`thread wait` returns the next allowlisted human message that does **not**
+already have this bot's addressed reaction (default `✅`). After the agent
+handles that message, `thread ack` applies that reaction. Later waits and
+`--unaddressed` reads skip it, so the same reply is not processed twice
+without sharing a cursor. Override the emoji with `--addressed-emoji` or
+`ANVIL_HOTLINE_ADDRESSED_EMOJI`. Wait does not ack automatically: a crash
+after wait and before ack will return the same message again.
+
+Thread posts do not need to be Discord "Reply" references. Empty-content
+messages are still skipped because Discord did not give the bot a body.
 
 The bot needs `VIEW_CHANNEL`, `READ_MESSAGE_HISTORY`, `CREATE_PUBLIC_THREADS`,
-and `SEND_MESSAGES_IN_THREADS` in the configured parent channel. Discord may
-automatically unarchive and join a visible thread when the bot sends a message.
+`SEND_MESSAGES_IN_THREADS`, and `ADD_REACTIONS` in the configured parent
+channel. Discord may automatically unarchive and join a visible thread when
+the bot sends a message.
 
 ### Emoji reaction choices
 
@@ -148,6 +168,7 @@ was chosen.
 | `ANVIL_HOTLINE_ALLOW_ANY_USER` | If `true`, any non-bot member may answer (private channels only) |
 | `ANVIL_HOTLINE_TIMEOUT` | Default wait (e.g. `30m`, `1h`) |
 | `ANVIL_HOTLINE_POLL_INTERVAL` | Poll cadence (default `5s`) |
+| `ANVIL_HOTLINE_ADDRESSED_EMOJI` | Emoji this bot applies to a handled human thread reply (default `✅`) |
 | `ANVIL_HOTLINE_ACCEPT_ANY_AFTER` | Accept first non-bot message after the question without requiring a Discord reply reference |
 | `ANVIL_HOTLINE_YES_NO_REACTIONS` | If `true`, pre-apply `✅=yes` and `❌=no` on the question |
 | `ANVIL_HOTLINE_REACTIONS` | Comma-separated `emoji=value` choices (e.g. `✅=yes,❌=no`) |

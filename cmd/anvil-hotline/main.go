@@ -151,7 +151,7 @@ func runAsk(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 
 func runThread(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	if len(args) == 0 || args[0] == "--help" || args[0] == "-h" {
-		_, err := fmt.Fprintln(stderr, "Usage: anvil-hotline thread <open|messages|reply|wait> [flags]")
+		_, err := fmt.Fprintln(stderr, "Usage: anvil-hotline thread <open|messages|reply|wait|ack> [flags]")
 		return err
 	}
 	switch args[0] {
@@ -163,8 +163,10 @@ func runThread(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 		return runThreadReply(args[1:], stdin, stdout, stderr)
 	case "wait":
 		return runThreadWait(args[1:], stdout, stderr)
+	case "ack":
+		return runThreadAck(args[1:], stdout, stderr)
 	default:
-		return fmt.Errorf("unsupported thread command %q; use open, messages, reply, or wait", args[0])
+		return fmt.Errorf("unsupported thread command %q; use open, messages, reply, wait, or ack", args[0])
 	}
 }
 
@@ -234,6 +236,8 @@ func runThreadMessages(args []string, stdout, stderr io.Writer) error {
 	threadID := flags.String("thread-id", "", "Discord thread id")
 	afterMessageID := flags.String("after-message-id", "", "return messages after this cursor")
 	limit := flags.Int("limit", 100, "maximum messages to read (1-100)")
+	unaddressedOnly := flags.Bool("unaddressed", false, "omit human messages this bot already addressed with the addressed emoji")
+	addressedEmoji := flags.String("addressed-emoji", envFirstDefault(hotline.DefaultAddressedEmoji, "ANVIL_HOTLINE_ADDRESSED_EMOJI"), "emoji this bot uses to mark a human reply as addressed")
 	output := flags.String("output", "json", "output format: text or json")
 	flags.Var(&allowedUserIDs, "allowed-user-id", "allowed Discord user id; may be repeated or comma-separated")
 	discordToken := flags.String("discord-token", "", "Discord bot token")
@@ -252,10 +256,12 @@ func runThreadMessages(args []string, stdout, stderr io.Writer) error {
 		return err
 	}
 	transcript, err := (hotline.Service{Transport: adapter}).ThreadMessages(context.Background(), hotline.ThreadMessagesRequest{
-		ThreadID:       *threadID,
-		AfterMessageID: *afterMessageID,
-		Limit:          *limit,
-		AllowedUserIDs: allowedUserIDs,
+		ThreadID:        *threadID,
+		AfterMessageID:  *afterMessageID,
+		Limit:           *limit,
+		AllowedUserIDs:  allowedUserIDs,
+		AddressedEmoji:  *addressedEmoji,
+		UnaddressedOnly: *unaddressedOnly,
 	})
 	if err != nil {
 		return err
@@ -307,6 +313,7 @@ func runThreadWait(args []string, stdout, stderr io.Writer) error {
 	afterMessageID := flags.String("after-message-id", "", "wait for a human message after this cursor")
 	timeoutRaw := flags.String("timeout", envFirstDefault("30m", "ANVIL_HOTLINE_TIMEOUT", "ANVIL_AGENT_FEEDBACK_TIMEOUT"), "maximum wait time; use 0 for no timeout")
 	pollRaw := flags.String("poll-interval", envFirstDefault("5s", "ANVIL_HOTLINE_POLL_INTERVAL", "ANVIL_AGENT_FEEDBACK_POLL_INTERVAL"), "poll interval")
+	addressedEmoji := flags.String("addressed-emoji", envFirstDefault(hotline.DefaultAddressedEmoji, "ANVIL_HOTLINE_ADDRESSED_EMOJI"), "emoji this bot uses to mark a human reply as addressed")
 	output := flags.String("output", "json", "output format: text or json")
 	flags.Var(&allowedUserIDs, "allowed-user-id", "allowed Discord user id; may be repeated or comma-separated")
 	discordToken := flags.String("discord-token", "", "Discord bot token")
@@ -338,11 +345,50 @@ func runThreadWait(args []string, stdout, stderr io.Writer) error {
 		Timeout:        timeout,
 		PollInterval:   pollInterval,
 		AllowedUserIDs: allowedUserIDs,
+		AddressedEmoji: *addressedEmoji,
 	})
 	if err != nil {
 		return err
 	}
 	return writeStructuredOutput(stdout, *output, message.Text, message)
+}
+
+func runThreadAck(args []string, stdout, stderr io.Writer) error {
+	flags := flag.NewFlagSet("anvil-hotline thread ack", flag.ContinueOnError)
+	flags.SetOutput(stderr)
+	threadID := flags.String("thread-id", "", "Discord thread id")
+	messageID := flags.String("message-id", "", "human message id to mark addressed")
+	addressedEmoji := flags.String("addressed-emoji", envFirstDefault(hotline.DefaultAddressedEmoji, "ANVIL_HOTLINE_ADDRESSED_EMOJI"), "emoji this bot uses to mark a human reply as addressed")
+	output := flags.String("output", "json", "output format: text or json")
+	discordToken := flags.String("discord-token", "", "Discord bot token")
+	discordChannelID := flags.String("discord-channel-id", "", "Discord parent channel id")
+	discordAPIBaseURL := flags.String("discord-api-base-url", "", "Discord API base URL")
+	if err := flags.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	adapter, err := buildDiscordAdapterFromFlags(*discordToken, *discordChannelID, *discordAPIBaseURL, false)
+	if err != nil {
+		return err
+	}
+	if err := (hotline.Service{Transport: adapter}).AckThread(context.Background(), hotline.ThreadAckRequest{
+		ThreadID:  *threadID,
+		MessageID: *messageID,
+		Emoji:     *addressedEmoji,
+	}); err != nil {
+		return err
+	}
+	acked := map[string]string{
+		"threadId":  strings.TrimSpace(*threadID),
+		"messageId": strings.TrimSpace(*messageID),
+		"emoji":     strings.TrimSpace(*addressedEmoji),
+	}
+	if acked["emoji"] == "" {
+		acked["emoji"] = hotline.DefaultAddressedEmoji
+	}
+	return writeStructuredOutput(stdout, *output, acked["messageId"], acked)
 }
 
 func buildDiscordAdapterFromFlags(token, channelID, apiBaseURL string, allowAnyUser bool) (*hotline.DiscordAdapter, error) {
@@ -377,7 +423,11 @@ func writeStructuredOutput(stdout io.Writer, output, textValue string, value any
 func formatTranscriptText(transcript hotline.ThreadTranscript) string {
 	var builder strings.Builder
 	for _, message := range transcript.Messages {
-		fmt.Fprintf(&builder, "%s\t%s\t%s\n", message.ID, message.Role, strings.ReplaceAll(message.Text, "\n", "\\n"))
+		state := "open"
+		if message.Addressed {
+			state = "addressed"
+		}
+		fmt.Fprintf(&builder, "%s\t%s\t%s\t%s\n", message.ID, message.Role, state, strings.ReplaceAll(message.Text, "\n", "\\n"))
 	}
 	return strings.TrimSuffix(builder.String(), "\n")
 }

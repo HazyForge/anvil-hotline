@@ -342,3 +342,141 @@ func TestDiscordThreadWaitReturnsNextAllowedHumanMessage(t *testing.T) {
 		t.Fatalf("message = %+v", message)
 	}
 }
+
+func TestDiscordThreadMessagesSkipAddressedHumansWhenRequested(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/t1":
+			_ = json.NewEncoder(w).Encode(discordChannel{ID: "t1", ParentID: "c123", Name: "Review", Type: 11})
+		case r.Method == http.MethodGet && r.URL.Path == "/users/@me":
+			_, _ = w.Write([]byte(`{"id":"bot","bot":true}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/t1/messages":
+			_ = json.NewEncoder(w).Encode([]discordMessage{
+				{
+					ID:      "102",
+					Content: "old answer",
+					Author:  discordUser{ID: "u1", Username: "Austin"},
+					Reactions: []discordReaction{{
+						Count: 1,
+						Me:    true,
+						Emoji: discordEmoji{Name: "✅"},
+					}},
+				},
+				{ID: "103", Content: "new answer", Author: discordUser{ID: "u1", Username: "Austin"}},
+				{ID: "101", Content: "proposal", Author: discordUser{ID: "bot", Bot: true}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{BotToken: "test", ChannelID: "c123", APIBaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	service := Service{Transport: adapter}
+	all, err := service.ThreadMessages(context.Background(), ThreadMessagesRequest{
+		ThreadID: "t1", Limit: 100, AllowedUserIDs: []string{"u1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(all.Messages) != 3 {
+		t.Fatalf("all messages = %+v, want 3", all.Messages)
+	}
+	unaddressed, err := service.ThreadMessages(context.Background(), ThreadMessagesRequest{
+		ThreadID: "t1", Limit: 100, AllowedUserIDs: []string{"u1"}, UnaddressedOnly: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(unaddressed.Messages) != 2 {
+		t.Fatalf("unaddressed = %+v, want agent + new human", unaddressed.Messages)
+	}
+	if unaddressed.Messages[1].Text != "new answer" || unaddressed.Messages[1].Addressed {
+		t.Fatalf("unaddressed human = %+v", unaddressed.Messages[1])
+	}
+}
+
+func TestDiscordThreadWaitSkipsAddressedHumanMessages(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/t1":
+			_ = json.NewEncoder(w).Encode(discordChannel{ID: "t1", ParentID: "c123", Name: "Review", Type: 11})
+		case r.Method == http.MethodGet && r.URL.Path == "/users/@me":
+			_, _ = w.Write([]byte(`{"id":"bot","bot":true}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/t1/messages":
+			_ = json.NewEncoder(w).Encode([]discordMessage{
+				{
+					ID:      "102",
+					Content: "already handled",
+					Author:  discordUser{ID: "u1", Username: "Austin"},
+					Reactions: []discordReaction{{
+						Me:    true,
+						Emoji: discordEmoji{Name: "✅"},
+					}},
+				},
+				{ID: "103", Content: "fresh reply", Author: discordUser{ID: "u1", Username: "Austin"}},
+			})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{BotToken: "test", ChannelID: "c123", APIBaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := (Service{Transport: adapter}).WaitThread(context.Background(), ThreadWaitRequest{
+		ThreadID: "t1", Timeout: time.Second, PollInterval: time.Millisecond, AllowedUserIDs: []string{"u1"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if message.Text != "fresh reply" || message.Addressed {
+		t.Fatalf("message = %+v, want fresh unaddressed human", message)
+	}
+}
+
+func TestDiscordThreadAckReactsOnThreadMessage(t *testing.T) {
+	t.Parallel()
+
+	var reactedPath string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/t1":
+			_ = json.NewEncoder(w).Encode(discordChannel{ID: "t1", ParentID: "c123", Name: "Review", Type: 11})
+		case r.Method == http.MethodGet && r.URL.Path == "/channels/t1/messages/102":
+			_ = json.NewEncoder(w).Encode(discordMessage{
+				ID: "102", ChannelID: "t1", Content: "need more evidence",
+				Author: discordUser{ID: "u1", Username: "Austin"},
+			})
+		case r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/reactions/"):
+			reactedPath = r.URL.Path
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	adapter, err := NewDiscordAdapter(DiscordConfig{BotToken: "test", ChannelID: "c123", APIBaseURL: server.URL, HTTPClient: server.Client()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := (Service{Transport: adapter}).AckThread(context.Background(), ThreadAckRequest{
+		ThreadID: "t1", MessageID: "102",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reactedPath, "/channels/t1/messages/102/reactions/") ||
+		!strings.Contains(reactedPath, "/@me") {
+		t.Fatalf("reacted path = %q, want thread message reaction", reactedPath)
+	}
+}
